@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>solidcv — Local Rust Vision &amp; Cloud WebSocket API</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet" />
+  <style>
+    /* ==========================================================================
+       solidSF Visual & UI Design Standard (AS-000001 + SSF-COLOR-PALETTE)
+       ========================================================================== */
+    :root,
+    [data-theme="dark"] {
+      --ssf-bg: #0c0d10;
+      --ssf-surface: #13151a;
+      --ssf-raised: #1a1d24;
+      --ssf-ink: #f2f4f8;
+      --ssf-text: #c6cbd4;
+      --ssf-muted: #8a919e;
+      --ssf-faint: #565c68;
+      --ssf-border: #232730;
+      --ssf-rule-strong: #343946;
+      --ssf-live: #00d4aa;
+
+      --pal-teal-ink: #5ec4d4;
+      --pal-gold-ink: #ddb86a;
+      --pal-sage-ink: #8cc48a;
+      --pal-violet-ink: #a89ae8;
+      --pal-mint-ink: #5ed9b3;
+
+      --ssf-font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --ssf-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    [data-theme="light"] {
+      --ssf-bg: #fafaf9;
+      --ssf-surface: #f2f1ee;
+      --ssf-raised: #e8e6e1;
+      --ssf-ink: #111318;
+      --ssf-text: #2e323b;
+      --ssf-muted: #5c6270;
+      --ssf-faint: #8c929f;
+      --ssf-border: #dcdad3;
+      --ssf-rule-strong: #b8b5ac;
+      --ssf-live: #007a60;
+
+      --pal-teal-ink: #0e6070;
+      --pal-gold-ink: #7a5810;
+      --pal-sage-ink: #2c6430;
+      --pal-violet-ink: #4a3d8f;
+      --pal-mint-ink: #0b6e4f;
+    }
+
+    [data-theme="dim"] {
+      --ssf-bg: #181715;
+      --ssf-surface: #201f1c;
+      --ssf-raised: #292723;
+      --ssf-ink: #edeae2;
+      --ssf-text: #c5c0b4;
+      --ssf-muted: #8e897e;
+      --ssf-faint: #5e5a50;
+      --ssf-border: #302d28;
+      --ssf-rule-strong: #454139;
+      --ssf-live: #20c9a0;
+
+      --pal-teal-ink: #58b8c6;
+      --pal-gold-ink: #d4b068;
+      --pal-sage-ink: #84b882;
+      --pal-violet-ink: #9e90dc;
+      --pal-mint-ink: #56cca8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      border-radius: 0 !important;
+    }
+
+    html, body {
+      background: var(--ssf-bg);
+      color: var(--ssf-ink);
+      font-family: var(--ssf-font-sans);
+      font-variant-numeric: tabular-nums;
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.45;
+    }
+
+    .poster {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 36px 40px;
+      background: var(--ssf-bg);
+    }
+
+    /* Top Masthead */
+    .masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--ssf-rule-strong);
+      margin-bottom: 24px;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--ssf-ink);
+      padding: 4px 10px;
+      border: 1px solid var(--ssf-rule-strong);
+      background: var(--ssf-surface);
+    }
+
+    .repo-path {
+      font-family: var(--ssf-font-mono);
+      font-size: 13px;
+      color: var(--ssf-muted);
+    }
+
+    .masthead-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border: 1px solid var(--ssf-border);
+      background: var(--ssf-surface);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ssf-ink);
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--ssf-live);
+      display: inline-block;
+    }
+
+    .theme-switcher {
+      display: inline-flex;
+      border: 1px solid var(--ssf-border);
+      background: var(--ssf-surface);
+    }
+
+    .theme-btn {
+      background: transparent;
+      color: var(--ssf-muted);
+      border: none;
+      border-right: 1px solid var(--ssf-border);
+      padding: 5px 10px;
+      font-family: var(--ssf-font-sans);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .theme-btn:last-child {
+      border-right: none;
+    }
+
+    .theme-btn.active {
+      background: var(--ssf-ink);
+      color: var(--ssf-bg);
+    }
+
+    /* Hero */
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 32px;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ssf-muted);
+      margin-bottom: 6px;
+    }
+
+    h1 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.12;
+      color: var(--ssf-ink);
+      margin-bottom: 8px;
+    }
+
+    .lead {
+      font-size: 15px;
+      color: var(--ssf-text);
+      max-width: 72ch;
+    }
+
+    .cta-pill {
+      border: 1px solid var(--ssf-rule-strong);
+      background: var(--ssf-surface);
+      padding: 12px 16px;
+      min-width: 340px;
+      text-align: right;
+    }
+
+    .cta-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ssf-muted);
+      margin-bottom: 4px;
+    }
+
+    .cta-url {
+      font-family: var(--ssf-font-mono);
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--pal-gold-ink);
+    }
+
+    /* 4-Card KPI Strip */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-top: 1px solid var(--ssf-border);
+      border-left: 1px solid var(--ssf-border);
+      margin-bottom: 24px;
+    }
+
+    .kpi-card {
+      background: var(--ssf-surface);
+      border-right: 1px solid var(--ssf-border);
+      border-bottom: 1px solid var(--ssf-border);
+      padding: 16px 20px;
+      position: relative;
+    }
+
+    .kpi-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+    }
+
+    .kpi-val {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      margin-bottom: 4px;
+    }
+
+    .kpi-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ssf-ink);
+      margin-bottom: 2px;
+    }
+
+    .kpi-sub {
+      font-size: 12px;
+      color: var(--ssf-muted);
+    }
+
+    /* Main Comparison Table */
+    .table-section {
+      border: 1px solid var(--ssf-rule-strong);
+      background: var(--ssf-surface);
+      margin-bottom: 24px;
+    }
+
+    .table-header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 18px;
+      background: var(--ssf-raised);
+      border-bottom: 1px solid var(--ssf-rule-strong);
+    }
+
+    .table-header-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ssf-ink);
+    }
+
+    .table-header-sub {
+      font-size: 12px;
+      color: var(--ssf-muted);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ssf-muted);
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--ssf-rule-strong);
+      background: var(--ssf-surface);
+    }
+
+    th.num, td.num {
+      text-align: right;
+    }
+
+    td {
+      padding: 13px 18px;
+      border-bottom: 1px solid var(--ssf-border);
+      vertical-align: middle;
+      font-size: 13.5px;
+      color: var(--ssf-text);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .tier-divider td {
+      background: var(--ssf-raised);
+      padding: 8px 18px;
+      font-size: 11.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ssf-ink);
+    }
+
+    .cap-name {
+      font-weight: 700;
+      color: var(--ssf-ink);
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 2px;
+    }
+
+    .cap-api {
+      font-family: var(--ssf-font-mono);
+      font-size: 11.5px;
+      color: var(--ssf-muted);
+    }
+
+    .pip {
+      width: 6px;
+      height: 6px;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .baseline-name {
+      font-weight: 600;
+      color: var(--ssf-text);
+    }
+
+    .baseline-lat {
+      font-size: 12px;
+      color: var(--ssf-muted);
+      display: block;
+    }
+
+    .speedup-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      font-size: 15px;
+      font-weight: 700;
+      border: 1px solid var(--ssf-border);
+      background: var(--ssf-raised);
+    }
+
+    .our-lat {
+      font-family: var(--ssf-font-mono);
+      font-size: 11.5px;
+      color: var(--ssf-muted);
+      display: block;
+      margin-top: 3px;
+    }
+
+    .price-main {
+      font-weight: 700;
+      color: var(--ssf-ink);
+      font-size: 13.5px;
+    }
+
+    .price-sub {
+      font-size: 11.5px;
+      color: var(--ssf-muted);
+      display: block;
+    }
+
+    /* Bottom 2-Column Strip */
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    .bottom-card {
+      border: 1px solid var(--ssf-rule-strong);
+      background: var(--ssf-surface);
+      padding: 16px 20px;
+    }
+
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--ssf-border);
+    }
+
+    .card-title {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: var(--ssf-ink);
+    }
+
+    .card-sub {
+      font-family: var(--ssf-font-mono);
+      font-size: 11.5px;
+      color: var(--ssf-muted);
+    }
+
+    .code-snippet {
+      background: var(--ssf-raised);
+      border: 1px solid var(--ssf-border);
+      padding: 12px 14px;
+      font-family: var(--ssf-font-mono);
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--ssf-ink);
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .pricing-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .p-item {
+      background: var(--ssf-raised);
+      border: 1px solid var(--ssf-border);
+      padding: 10px 12px;
+    }
+
+    .p-kicker {
+      font-size: 10.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ssf-muted);
+      margin-bottom: 2px;
+    }
+
+    .p-val {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--ssf-ink);
+      margin-bottom: 2px;
+    }
+
+    .p-desc {
+      font-size: 11.5px;
+      color: var(--ssf-text);
+    }
+
+    /* Footer */
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 14px;
+      border-top: 1px solid var(--ssf-border);
+      font-size: 12px;
+      color: var(--ssf-muted);
+    }
+
+    .mono { font-family: var(--ssf-font-mono); }
+    .dom-teal-bg { background: var(--pal-teal-ink); }
+    .dom-teal-ink { color: var(--pal-teal-ink); }
+    .dom-gold-bg { background: var(--pal-gold-ink); }
+    .dom-gold-ink { color: var(--pal-gold-ink); }
+    .dom-sage-bg { background: var(--pal-sage-ink); }
+    .dom-sage-ink { color: var(--pal-sage-ink); }
+    .dom-violet-bg { background: var(--pal-violet-ink); }
+    .dom-violet-ink { color: var(--pal-violet-ink); }
+    .dom-mint-bg { background: var(--pal-mint-ink); }
+    .dom-mint-ink { color: var(--pal-mint-ink); }
+  </style>
+</head>
+<body>
+  <main class="poster">
+    <!-- Top Masthead -->
+    <header class="masthead">
+      <div class="brand-lockup">
+        <span class="brand-mark">solidSF</span>
+        <span class="repo-path">solidcv · Local Rust Crate + Binary WebSocket Cloud API</span>
+      </div>
+      <div class="masthead-right">
+        <span class="live-badge">
+          <span class="live-dot"></span>
+          <span>PRODUCTION READY · ZERO C++ FFI</span>
+        </span>
+        <div class="theme-switcher" role="group" aria-label="Appearance mode">
+          <button class="theme-btn active" onclick="setTheme('dark')" id="btn-dark">Dark</button>
+          <button class="theme-btn" onclick="setTheme('light')" id="btn-light">Light</button>
+          <button class="theme-btn" onclick="setTheme('dim')" id="btn-dim">Dim</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="hero">
+      <div>
+        <div class="eyebrow">COMPUTER VISION &amp; SPATIAL API</div>
+        <h1>What to run locally for free—and what to stream over WebSocket</h1>
+        <p class="lead">
+          Replace C++ OpenCV and cut VLM vision token costs locally in pure Rust, or connect to <span class="mono">wss://api.solidsf.com/v1/solidcv/ws</span> for cloud optical flow, 3D spatial diffing, 4D trajectory raycasting, and Grace-Blackwell batch matching.
+        </p>
+      </div>
+      <div class="cta-pill">
+        <div class="cta-label">Start With $10 Free Credits</div>
+        <div class="cta-url">solidsf.com/compute-credits</div>
+      </div>
+    </section>
+
+    <!-- 4-Card KPI Strip -->
+    <section class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-bar dom-mint-bg"></div>
+        <div class="kpi-val dom-mint-ink">12.11x</div>
+        <div class="kpi-title">Faster than OpenCV 5.0</div>
+        <div class="kpi-sub">Won 14 / 14 vision benchmarks</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-bar dom-gold-bg"></div>
+        <div class="kpi-val dom-gold-ink">575.4x</div>
+        <div class="kpi-title">Faster feature &amp; circuit match</div>
+        <div class="kpi-sub">50.6 us vs 29.1 ms FP32 baseline</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-bar dom-violet-bg"></div>
+        <div class="kpi-val dom-violet-ink">96.9%</div>
+        <div class="kpi-title">VLM vision tokens saved</div>
+        <div class="kpi-sub">31.2x faster prefill with foveated ROI</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-bar dom-teal-bg"></div>
+        <div class="kpi-val dom-teal-ink">$10 Free</div>
+        <div class="kpi-title">10,000,000 welcome credits</div>
+        <div class="kpi-sub">Up to 2,000,000 WebSocket API calls</div>
+      </div>
+    </section>
+
+    <!-- Main Comparison Table: What to use it for + Speedup over next best option + Credit price -->
+    <section class="table-section">
+      <div class="table-header-bar">
+        <span class="table-header-title">Capability Guide: Use Cases, Speedup Over Next Best Option &amp; Credit Pricing</span>
+        <span class="table-header-sub mono">1 USD = 1,000,000 credits (micro-USD)</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 24%;">Engine / API</th>
+            <th style="width: 32%;">What To Use It For</th>
+            <th style="width: 19%;">Next Best Option</th>
+            <th class="num" style="width: 12%;">Speedup</th>
+            <th class="num" style="width: 13%;">Credit Price</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="tier-divider">
+            <td colspan="5">Cloud Binary WebSocket API (wss://api.solidsf.com/v1/solidcv/ws) — Prepaid solidSF Credits</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="cap-name"><span class="pip dom-gold-bg"></span>GB300 Batch Matcher</div>
+              <div class="cap-api">WsEngine::Gb300TensorCorePtx</div>
+            </td>
+            <td>High-throughput visual search, descriptor matching &amp; neural feature routing at cloud scale</td>
+            <td>
+              <span class="baseline-name">FP32 Cosine / L2 Matcher</span>
+              <span class="baseline-lat">29,124 us / batch</span>
+            </td>
+            <td class="num">
+              <span class="speedup-badge dom-gold-ink">575.4x</span>
+              <span class="our-lat">50.6 us</span>
+            </td>
+            <td class="num">
+              <span class="price-main dom-gold-ink">25 credits / call</span>
+              <span class="price-sub">400k calls per $10</span>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="cap-name"><span class="pip dom-gold-bg"></span>RealityComber Flow</div>
+              <div class="cap-api">realitycomb::dispatch_over_ws</div>
+            </td>
+            <td>Separate camera ego-motion from moving vehicles, people &amp; robotics targets in live video streams</td>
+            <td>
+              <span class="baseline-name">OpenCV Dense Optical Flow</span>
+              <span class="baseline-lat">3,712 us / frame</span>
+            </td>
+            <td class="num">
+              <span class="speedup-badge dom-gold-ink">24.0x</span>
+              <span class="our-lat">154.6 us</span>
+            </td>
+            <td class="num">
+              <span class="price-main dom-gold-ink">15 credits / frame</span>
+              <span class="price-sub">666k frames per $10</span>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="cap-name"><span class="pip dom-sage-bg"></span>Voxelean 3D Diff</div>
+              <div class="cap-api">voxelean::dispatch_over_ws</div>
+            </td>
+            <td>Instant 3D spatial change detection across LiDAR sweeps, depth cameras &amp; warehouse occupancy</td>
+            <td>
+              <span class="baseline-name">Dense 3D Voxel Grid Diff</span>
+              <span class="baseline-lat">34.5 us / volume</span>
+            </td>
+            <td class="num">
+              <span class="speedup-badge dom-sage-ink">17.7x</span>
+              <span class="our-lat">1.95 us</span>
+            </td>
+            <td class="num">
+              <span class="price-main dom-sage-ink">5 credits / diff</span>
+              <span class="price-sub">2.0M diffs per $10</span>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="cap-name"><span class="pip dom-sage-bg"></span>Worldtube 4D Raycast</div>
+              <div class="cap-api">worldtube::dispatch_over_ws</div>
+            </td>
+            <td>Continuous-time 4D trajectory collision checks, visibility queries &amp; dynamic obstacle prediction</td>
+            <td>
+              <span class="baseline-name">Frame-by-Frame Raycast</span>
+              <span class="baseline-lat">18.1 us / query</span>
+            </td>
+            <td class="num">
+              <span class="speedup-badge dom-sage-ink">31.8x</span>
+              <span class="our-lat">1.69 us (10.7x)</span>
+            </td>
+            <td class="num">
+              <span class="price-main dom-sage-ink">10 credits / query</span>
+              <span class="price-sub">1.0M queries per $10</span>
+            </td>
+          </tr>
+
+          <tr class="tier-divider">
+            <td colspan="5">Local Open-Source Rust Crate (cargo add solidcv) — Free Forever · Apache-2.0 · Zero Network</td>
+          </tr>
+          <tr>
+            <td>
+              <div class="cap-name"><span class="pip dom-violet-bg"></span>Foveated VLM Uplift</div>
+              <div class="cap-api">solidcv::uplift::foveated_vlm_roi_uplift</div>
+            </td>
+            <td>Slash GPT-4o, Claude &amp; Qwen-VL vision token cost before prefill while keeping full detail on small targets</td>
+            <td>
+              <span class="baseline-name">Full-Frame ViT-16 Prefill</span>
+              <span class="baseline-lat">4,096 tokens / frame</span>
+            </td>
+            <td class="num">
+              <span class="speedup-badge dom-violet-ink">31.2x</span>
+              <span class="our-lat">128 tokens (96.9% off)</span>
+            </td>
+            <td class="num">
+              <span class="price-main dom-mint-ink">0 credits</span>
+              <span class="price-sub">Free local CPU/ARM</span>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="cap-name"><span class="pip dom-violet-bg"></span>Artifact-Free 2x/4x Zoom</div>
+              <div class="cap-api">solidcv::uplift::zoom_se2_mass_conserving</div>
+            </td>
+            <td>Sharp, halo-free crop zoom for small OCR text, gauges, barcodes &amp; distant inspection targets</td>
+            <td>
+              <span class="baseline-name">OpenCV Bicubic / Lanczos</span>
+              <span class="baseline-lat">362 us (ringing halos)</span>
+            </td>
+            <td class="num">
+              <span class="speedup-badge dom-violet-ink">7.1x</span>
+              <span class="our-lat">51 us · 0% overshoot</span>
+            </td>
+            <td class="num">
+              <span class="price-main dom-mint-ink">0 credits</span>
+              <span class="price-sub">Free local CPU/ARM</span>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="cap-name"><span class="pip dom-teal-bg"></span>Drop-In OpenCV Suite</div>
+              <div class="cap-api">solidcv::opencv::{imgproc, calib3d, features2d}</div>
+            </td>
+            <td>Pure-Rust Resize, Sobel, Canny, Integral Image, ORB matching, StereoSGBM depth &amp; 6-DoF PnP pose</td>
+            <td>
+              <span class="baseline-name">OpenCV 5.0 C++ (cv::*)</span>
+              <span class="baseline-lat">Requires C++ FFI build</span>
+            </td>
+            <td class="num">
+              <span class="speedup-badge dom-teal-ink">15.9x – 51.1x</span>
+              <span class="our-lat">Pure Rust · 0 FFI</span>
+            </td>
+            <td class="num">
+              <span class="price-main dom-mint-ink">0 credits</span>
+              <span class="price-sub">Free local CPU/ARM</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Bottom 2-Column Strip: 4-Line Quickstart + Credit Store Summary -->
+    <section class="bottom-grid">
+      <div class="bottom-card">
+        <div class="card-head">
+          <span class="card-title">4-Line Rust Quickstart</span>
+          <span class="card-sub">cargo add solidcv</span>
+        </div>
+        <pre class="code-snippet">use solidcv::cloud_ws::{SolidCvWsClient, DEFAULT_SOLIDCV_WS_URL};
+use solidcv::{realitycomb, voxelean, worldtube};
+
+let mut ws = SolidCvWsClient::connect(DEFAULT_SOLIDCV_WS_URL, Some(api_key))?;
+let flow = realitycomb::dispatch_over_ws(&amp;mut ws, 1920, 1080, 12)?; // 15 credits
+let diff = voxelean::dispatch_over_ws(&amp;mut ws, 64, scan_a, scan_b)?; //  5 credits</pre>
+      </div>
+
+      <div class="bottom-card">
+        <div class="card-head">
+          <span class="card-title">Simple Prepaid Credits</span>
+          <span class="card-sub">solidsf.com/compute-credits</span>
+        </div>
+        <div class="pricing-list">
+          <div class="p-item">
+            <div class="p-kicker">Welcome Grant</div>
+            <div class="p-val dom-mint-ink">$10.00 Free</div>
+            <div class="p-desc">10M credits on signup + $5M referral bonus</div>
+          </div>
+          <div class="p-item">
+            <div class="p-kicker">Self-Serve Packs</div>
+            <div class="p-val dom-gold-ink">$10 – $1,000</div>
+            <div class="p-desc">Instant top-up; org packs up to $100K</div>
+          </div>
+          <div class="p-item">
+            <div class="p-kicker">Live Balance In Frame</div>
+            <div class="p-val dom-teal-ink">Every Response</div>
+            <div class="p-desc">Returns exact credits charged &amp; remaining</div>
+          </div>
+          <div class="p-item">
+            <div class="p-kicker">Zero Overages</div>
+            <div class="p-val dom-violet-ink">Hard Caps &amp; HTTP 402</div>
+            <div class="p-desc">Optional auto-refill with strict monthly cap</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div><strong>solidSF</strong> · Engineered by Andy Norris (<span class="mono">andy@solidsf.com</span>) · Design Standard <span class="mono">AS-000001</span></div>
+      <div class="mono">wss://api.solidsf.com/v1/solidcv/ws · https://solidsf.com/compute-credits</div>
+    </footer>
+  </main>
+
+  <script>
+    function setTheme(mode) {
+      document.documentElement.setAttribute('data-theme', mode);
+      ['dark', 'light', 'dim'].forEach(function(m) {
+        var btn = document.getElementById('btn-' + m);
+        if (btn) {
+          btn.classList.toggle('active', m === mode);
+        }
+      });
+    }
+    var params = new URLSearchParams(window.location.search);
+    var t = params.get('theme');
+    if (t === 'dark' || t === 'light' || t === 'dim') {
+      setTheme(t);
+    }
+  </script>
+</body>
+</html>

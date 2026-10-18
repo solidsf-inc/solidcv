@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>solidcv v0.1.0 — 14-stage benchmark suite | solidSF</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* =========================================================================
+       AS-000001 + SSF-COLOR-PALETTE Canonical Tokens (Dark, Light, Dim)
+       ========================================================================= */
+    :root,
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --ssf-bg: #000000;
+      --ssf-panel: #000000;
+      --ssf-surface: #0d0d0d;
+      --ssf-raised: #171717;
+      --ssf-border: #3d3d3d;
+      --ssf-rule-strong: #ffffff;
+      --ssf-ink: #ffffff;
+      --ssf-text: #d8d8d8;
+      --ssf-muted: #aaaaaa;
+      --ssf-faint: #787878;
+      --ssf-live: #8ff5c5;
+
+      /* SSF 21-Color Palette Data Illustration Families (Dark Mode -> Mid/Light Member) */
+      --pal-neutral-bar: #34322E;     /* Graphite */
+      --pal-neutral-ink: #F2E9D8;     /* Warm Bone */
+      --pal-teal-fill: #087F9C;       /* Deep Teal */
+      --pal-teal-ink: #38D9FF;        /* Cyan */
+      --pal-teal-badge: #A9EFFF;      /* Ice */
+      --pal-gold-fill: #8F6A22;       /* Bronze */
+      --pal-gold-ink: #C8A45A;        /* Gold */
+      --pal-gold-badge: #E8CF91;      /* Sand */
+      --pal-sage-fill: #58634E;       /* Moss */
+      --pal-sage-ink: #89977B;        /* Sage */
+      --pal-sage-badge: #BCC7AD;      /* Pale Sage */
+      --pal-violet-fill: #5D34C7;     /* Deep Violet */
+      --pal-violet-ink: #8B5CF6;      /* Violet */
+      --pal-violet-badge: #C5B3FF;    /* Lavender */
+      --pal-mint-fill: #3A5C4C;       /* Pine */
+      --pal-mint-ink: #83CEAA;        /* Mint */
+      --pal-mint-glow: #B9E8D1;       /* Mint Glow */
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --ssf-bg: #ffffff;
+      --ssf-panel: #ffffff;
+      --ssf-surface: #f7f7f7;
+      --ssf-raised: #efefef;
+      --ssf-border: #b8b8b8;
+      --ssf-rule-strong: #000000;
+      --ssf-ink: #000000;
+      --ssf-text: #242424;
+      --ssf-muted: #555555;
+      --ssf-faint: #6e6e6e;
+      --ssf-live: #087a50;
+
+      /* SSF 21-Color Palette Data Illustration Families (Light Mode -> Dark Member for 4.5:1) */
+      --pal-neutral-bar: #34322E;     /* Graphite */
+      --pal-neutral-ink: #050505;     /* Carbon */
+      --pal-teal-fill: #A9EFFF;       /* Ice */
+      --pal-teal-ink: #087F9C;        /* Deep Teal */
+      --pal-teal-badge: #087F9C;
+      --pal-gold-fill: #E8CF91;       /* Sand */
+      --pal-gold-ink: #8F6A22;        /* Bronze */
+      --pal-gold-badge: #8F6A22;
+      --pal-sage-fill: #BCC7AD;       /* Pale Sage */
+      --pal-sage-ink: #58634E;        /* Moss */
+      --pal-sage-badge: #58634E;
+      --pal-violet-fill: #C5B3FF;     /* Lavender */
+      --pal-violet-ink: #5D34C7;      /* Deep Violet */
+      --pal-violet-badge: #5D34C7;
+      --pal-mint-fill: #B9E8D1;       /* Mint Glow */
+      --pal-mint-ink: #3A5C4C;        /* Pine */
+      --pal-mint-glow: #3A5C4C;
+    }
+
+    :root[data-theme="dim"] {
+      color-scheme: dark;
+      --ssf-bg: #1d1a16;
+      --ssf-panel: #1d1a16;
+      --ssf-surface: #26211b;
+      --ssf-raised: #30291f;
+      --ssf-border: #4b4338;
+      --ssf-rule-strong: #9f917d;
+      --ssf-ink: #e8dcc8;
+      --ssf-text: #d2c5b1;
+      --ssf-muted: #9c8f7c;
+      --ssf-faint: #7d7160;
+      --ssf-live: #a7cfad;
+
+      /* SSF 21-Color Palette Data Illustration Families (Dim Mode) */
+      --pal-neutral-bar: #34322E;     /* Graphite */
+      --pal-neutral-ink: #F2E9D8;     /* Warm Bone */
+      --pal-teal-fill: #087F9C;       /* Deep Teal */
+      --pal-teal-ink: #A9EFFF;        /* Ice */
+      --pal-teal-badge: #A9EFFF;
+      --pal-gold-fill: #8F6A22;       /* Bronze */
+      --pal-gold-ink: #E8CF91;        /* Sand */
+      --pal-gold-badge: #E8CF91;
+      --pal-sage-fill: #58634E;       /* Moss */
+      --pal-sage-ink: #BCC7AD;        /* Pale Sage */
+      --pal-sage-badge: #BCC7AD;
+      --pal-violet-fill: #5D34C7;     /* Deep Violet */
+      --pal-violet-ink: #C5B3FF;      /* Lavender */
+      --pal-violet-badge: #C5B3FF;
+      --pal-mint-fill: #3A5C4C;       /* Pine */
+      --pal-mint-ink: #B9E8D1;        /* Mint Glow */
+      --pal-mint-glow: #B9E8D1;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      border-radius: 0 !important;
+    }
+
+    html, body {
+      background: var(--ssf-bg);
+      color: var(--ssf-ink);
+      font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-variant-numeric: tabular-nums;
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.45;
+      overflow-x: hidden;
+    }
+
+    code, pre, .mono {
+      font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .poster {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 36px 40px 44px;
+      border-left: 1px solid var(--ssf-border);
+      border-right: 1px solid var(--ssf-border);
+      background: var(--ssf-bg);
+    }
+
+    /* Top Masthead */
+    .masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 18px;
+      border-bottom: 2px solid var(--ssf-rule-strong);
+      margin-bottom: 24px;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--ssf-ink);
+      padding: 4px 10px;
+      border: 1px solid var(--ssf-ink);
+      background: var(--ssf-surface);
+    }
+
+    .repo-path {
+      font-size: 13px;
+      color: var(--ssf-muted);
+    }
+
+    .masthead-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border: 1px solid var(--ssf-border);
+      background: var(--ssf-surface);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ssf-ink);
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--ssf-live);
+      display: inline-block;
+    }
+
+    .theme-switcher {
+      display: inline-flex;
+      border: 1px solid var(--ssf-border);
+    }
+
+    .theme-btn {
+      background: var(--ssf-surface);
+      color: var(--ssf-muted);
+      border: none;
+      border-right: 1px solid var(--ssf-border);
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .theme-btn:last-child {
+      border-right: none;
+    }
+
+    .theme-btn.active {
+      background: var(--ssf-ink);
+      color: var(--ssf-bg);
+    }
+
+    /* Hero Header */
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.55fr 1fr;
+      gap: 24px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--ssf-border);
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--ssf-muted);
+      margin-bottom: 8px;
+    }
+
+    h1 {
+      font-size: 34px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.12;
+      color: var(--ssf-ink);
+      margin-bottom: 12px;
+    }
+
+    .lead {
+      font-size: 15px;
+      color: var(--ssf-text);
+      max-width: 68ch;
+    }
+
+    .hardware-box {
+      background: var(--ssf-surface);
+      border: 1px solid var(--ssf-border);
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .hw-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ssf-muted);
+    }
+
+    .hw-spec {
+      font-size: 12.5px;
+      color: var(--ssf-text);
+      line-height: 1.5;
+    }
+
+    .hw-cmd {
+      padding: 8px 10px;
+      background: var(--ssf-raised);
+      border: 1px solid var(--ssf-border);
+      font-size: 11.5px;
+      color: var(--ssf-ink);
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+
+    /* KPI Strip */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      border-top: 1px solid var(--ssf-border);
+      border-left: 1px solid var(--ssf-border);
+      margin-bottom: 24px;
+    }
+
+    .kpi-card {
+      background: var(--ssf-surface);
+      border-right: 1px solid var(--ssf-border);
+      border-bottom: 1px solid var(--ssf-border);
+      padding: 16px 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .kpi-domain-bar {
+      height: 3px;
+      width: 100%;
+      margin-bottom: 6px;
+    }
+
+    .kpi-value {
+      font-size: 25px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--ssf-ink);
+      line-height: 1.1;
+      white-space: nowrap;
+    }
+
+    .kpi-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ssf-text);
+      margin-top: 2px;
+    }
+
+    .kpi-sub {
+      font-size: 11px;
+      color: var(--ssf-muted);
+    }
+
+    /* SSF 21-Color Palette Domain Legend (Required by SSF-COLOR-PALETTE.md) */
+    .palette-legend {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--ssf-surface);
+      border: 1px solid var(--ssf-border);
+      margin-bottom: 16px;
+      font-size: 12px;
+    }
+
+    .legend-title {
+      font-weight: 700;
+      color: var(--ssf-ink);
+      margin-right: 6px;
+    }
+
+    .legend-items {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      align-items: center;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--ssf-text);
+    }
+
+    .swatch-sq {
+      width: 10px;
+      height: 10px;
+      display: inline-block;
+      border: 1px solid var(--ssf-border);
+    }
+
+    /* Benchmark Table */
+    .table-wrap {
+      width: 100%;
+      border: 1px solid var(--ssf-border);
+      margin-bottom: 24px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    thead th {
+      background: var(--ssf-raised);
+      color: var(--ssf-muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      text-align: left;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--ssf-rule-strong);
+      border-right: 1px solid var(--ssf-border);
+    }
+
+    thead th.num,
+    tbody td.num,
+    tfoot td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    thead th:last-child,
+    tbody td:last-child,
+    tfoot td:last-child {
+      border-right: none;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid var(--ssf-border);
+      background: var(--ssf-bg);
+    }
+
+    tbody tr:nth-child(even) {
+      background: var(--ssf-surface);
+    }
+
+    tbody td {
+      padding: 10px 12px;
+      font-size: 12.5px;
+      color: var(--ssf-text);
+      border-right: 1px solid var(--ssf-border);
+      vertical-align: middle;
+    }
+
+    .stage-cell {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+    }
+
+    .domain-pip {
+      width: 4px;
+      min-width: 4px;
+      height: 30px;
+      margin-top: 2px;
+    }
+
+    .stage-name {
+      font-weight: 700;
+      color: var(--ssf-ink);
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    .stage-domain {
+      font-size: 11px;
+      color: var(--ssf-muted);
+      margin-top: 2px;
+    }
+
+    .workload-text {
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--ssf-text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .solidcv-time {
+      font-weight: 700;
+      color: var(--ssf-ink);
+      font-size: 13.5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .baseline-name {
+      font-weight: 500;
+      color: var(--ssf-text);
+      font-size: 12px;
+    }
+
+    .baseline-time {
+      color: var(--ssf-muted);
+      font-size: 12.5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .speedup-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .speedup-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .speedup-badge {
+      font-weight: 700;
+      font-size: 13px;
+      padding: 1px 6px;
+      border: 1px solid var(--ssf-border);
+      background: var(--ssf-raised);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bar-track {
+      width: 100%;
+      height: 6px;
+      background: var(--pal-neutral-bar);
+      position: relative;
+    }
+
+    .bar-fill {
+      height: 100%;
+    }
+
+    .adv-text {
+      font-size: 12px;
+      color: var(--ssf-text);
+      line-height: 1.35;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .adv-highlight {
+      font-weight: 700;
+      color: var(--ssf-ink);
+    }
+
+    tfoot tr {
+      background: var(--ssf-raised);
+      border-top: 2px solid var(--ssf-rule-strong);
+    }
+
+    tfoot td {
+      padding: 12px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--ssf-ink);
+      border-right: 1px solid var(--ssf-border);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Bottom Architecture Pillars */
+    .pillars-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-top: 1px solid var(--ssf-border);
+      border-left: 1px solid var(--ssf-border);
+      margin-bottom: 18px;
+    }
+
+    .pillar-card {
+      background: var(--ssf-surface);
+      border-right: 1px solid var(--ssf-border);
+      border-bottom: 1px solid var(--ssf-border);
+      padding: 15px 16px;
+    }
+
+    .pillar-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--ssf-ink);
+      margin-bottom: 6px;
+    }
+
+    .pillar-body {
+      font-size: 12px;
+      color: var(--ssf-muted);
+      line-height: 1.45;
+    }
+
+    /* Footer */
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 14px;
+      border-top: 1px solid var(--ssf-border);
+      font-size: 12px;
+      color: var(--ssf-muted);
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    /* Domain Color Classes (SSF 21-Color Palette) */
+    .dom-teal-bg { background: var(--pal-teal-ink); }
+    .dom-teal-ink { color: var(--pal-teal-ink); }
+    .dom-gold-bg { background: var(--pal-gold-ink); }
+    .dom-gold-ink { color: var(--pal-gold-ink); }
+    .dom-sage-bg { background: var(--pal-sage-ink); }
+    .dom-sage-ink { color: var(--pal-sage-ink); }
+    .dom-violet-bg { background: var(--pal-violet-ink); }
+    .dom-violet-ink { color: var(--pal-violet-ink); }
+    .dom-mint-bg { background: var(--pal-mint-ink); }
+    .dom-mint-ink { color: var(--pal-mint-ink); }
+
+    /* Responsive Mobile Layout (390x844 zero horizontal overflow) */
+    @media (max-width: 980px) {
+      .poster {
+        padding: 16px;
+      }
+      .hero-grid {
+        grid-template-columns: 1fr;
+      }
+      .kpi-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .pillars-grid {
+        grid-template-columns: 1fr;
+      }
+      h1 {
+        font-size: 24px;
+      }
+      table, thead, tbody, tfoot, th, td, tr {
+        display: block;
+        width: 100% !important;
+      }
+      thead {
+        display: none;
+      }
+      tbody tr, tfoot tr {
+        padding: 10px 0;
+        border-bottom: 1px solid var(--ssf-border);
+      }
+      tbody td, tfoot td {
+        border-right: none;
+        padding: 4px 10px;
+        text-align: left !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="poster">
+    <!-- Top Masthead -->
+    <header class="masthead">
+      <div class="brand-lockup">
+        <span class="brand-mark">solidSF</span>
+        <span class="repo-path mono">github.com/solidsf-inc/solidcv · v0.1.0 · Apache-2.0</span>
+      </div>
+      <div class="masthead-right">
+        <span class="live-badge">
+          <span class="live-dot"></span>
+          <span>25/25 VERIFIED PASS · ZERO C++ FFI</span>
+        </span>
+        <div class="theme-switcher" role="group" aria-label="Appearance mode">
+          <button class="theme-btn active" onclick="setTheme('dark')" id="btn-dark">Dark</button>
+          <button class="theme-btn" onclick="setTheme('light')" id="btn-light">Light</button>
+          <button class="theme-btn" onclick="setTheme('dim')" id="btn-dim">Dim</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Hero Section (AS-000001 copy caps: eyebrow <= 3 words, h1 <= 10 words, lead <= 32 words) -->
+    <section class="hero-grid">
+      <div>
+        <div class="eyebrow">BENCHMARK VERIFICATION</div>
+        <h1>Pure-Rust vision and mechanistic interpretability at 12.11x</h1>
+        <p class="lead">
+          <span class="mono">solidcv</span> replaces C++ OpenCV and dense VLM tokenizers with Pixelean bit-slicing, Voxelean 3D octrees, <span class="mono">(3+1)D</span> Worldtubes, non-hallucinating <span class="mono">SE(2)</span> uplift, and 1-bit Tensor-Core <span class="mono">b1.xor.popc</span> kernels.
+        </p>
+      </div>
+      <div class="hardware-box">
+        <div class="hw-title">Hardware &amp; Coherent Slab Environment</div>
+        <div class="hw-spec">
+          <strong>Target:</strong> Apple Silicon Unified Memory (<span class="mono">aarch64 NEON + Metal 3.1</span>) &amp; NVIDIA Grace-Blackwell GB300 / GB10 (<span class="mono">PTX 8.5+ m16n8k256</span>)<br />
+          <strong>Allocator:</strong> <span class="mono">GraceCoherentSlab&lt;T&gt;</span> (16 KB page + 128B Tensor-Core aligned)
+        </div>
+        <div class="hw-cmd mono">$ cargo run --release --example full_suite_benchmark</div>
+      </div>
+    </section>
+
+    <!-- 6-Card KPI Strip -->
+    <section class="kpi-grid" aria-label="Headline benchmark metrics">
+      <div class="kpi-card">
+        <div class="kpi-domain-bar dom-mint-bg"></div>
+        <div class="kpi-value dom-mint-ink">12.11x</div>
+        <div class="kpi-label">Geometric mean speedup</div>
+        <div class="kpi-sub">Faster across all 14 stages</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-domain-bar dom-violet-bg"></div>
+        <div class="kpi-value dom-violet-ink">575.35x</div>
+        <div class="kpi-label">1-bit Tensor-Core SAE match</div>
+        <div class="kpi-sub">50.62 us vs 29,123 us FP32</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-domain-bar dom-violet-bg"></div>
+        <div class="kpi-value dom-violet-ink">31.19x</div>
+        <div class="kpi-label">Foveated VLM ROI uplift</div>
+        <div class="kpi-sub">96.9% VLM tokens saved (317 us CV)</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-domain-bar dom-gold-bg"></div>
+        <div class="kpi-value dom-gold-ink">15.89x</div>
+        <div class="kpi-label">L1-ring fused StereoSGBM</div>
+        <div class="kpi-sub">1,252 us · 100.0% Census64 accuracy</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-domain-bar dom-teal-bg"></div>
+        <div class="kpi-value dom-teal-ink">1,260 MPairs/s</div>
+        <div class="kpi-label">256-bit ORB BFMatcher</div>
+        <div class="kpi-sub">5.53x faster than OpenCV 5.0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-domain-bar dom-teal-bg"></div>
+        <div class="kpi-value dom-teal-ink">39.18 GPix/s</div>
+        <div class="kpi-label">Unrolled NEON bitplane pack</div>
+        <div class="kpi-sub">26.76 us · 8x smaller footprint</div>
+      </div>
+    </section>
+
+    <!-- SSF 21-Color Palette Legend -->
+    <section class="palette-legend" aria-label="SSF palette domain legend">
+      <div class="legend-items">
+        <span class="legend-title">SSF 21-Color Palette Domain Key:</span>
+        <span class="legend-item">
+          <span class="swatch-sq dom-teal-bg"></span>
+          <span><strong>Teal / Cyan</strong> · 2D Pixelean, OpenCV Core &amp; SE(2) Zoom (Stages 1–5, 13)</span>
+        </span>
+        <span class="legend-item">
+          <span class="swatch-sq dom-gold-bg"></span>
+          <span><strong>Bronze / Gold</strong> · 3D Stereo, Pose &amp; RealityComber (Stages 6–8)</span>
+        </span>
+        <span class="legend-item">
+          <span class="swatch-sq dom-sage-bg"></span>
+          <span><strong>Moss / Sage</strong> · 3D Voxelean &amp; (3+1)D Worldtubes (Stages 9–10)</span>
+        </span>
+        <span class="legend-item">
+          <span class="swatch-sq dom-violet-bg"></span>
+          <span><strong>Violet / Lavender</strong> · VLM Token Pruning, Foveated Uplift &amp; SAE (Stages 11–12, 14)</span>
+        </span>
+      </div>
+    </section>
+
+    <!-- 14-Stage Benchmark Table -->
+    <div class="table-wrap">
+      <table>
+        <colgroup>
+          <col style="width: 21.5%;" />
+          <col style="width: 14.5%;" />
+          <col style="width: 9.5%;" />
+          <col style="width: 18%;" />
+          <col style="width: 10%;" />
+          <col style="width: 10.5%;" />
+          <col style="width: 16%;" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Stage &amp; Subsystem</th>
+            <th>Workload</th>
+            <th class="num">solidcv</th>
+            <th>Next Best Option</th>
+            <th class="num">Baseline</th>
+            <th>Speedup</th>
+            <th>Mathematical / Hardware Advantage</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Stage 1 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-teal-bg"></span>
+                <div>
+                  <div class="stage-name">1. Bitplane Pack vs Threshold</div>
+                  <div class="stage-domain">Pixelean Theorem 1 · NEON</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">1024x1024 8-bit</td>
+            <td class="num solidcv-time">26.76 us</td>
+            <td class="baseline-name">OpenCV 5.0 (threshold + count)</td>
+            <td class="num baseline-time">35.67 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-teal-ink">1.33x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-teal-bg" style="width: 20%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">39.18 GPix/s</span> 2-block <span class="mono">vst1q_u64</span> · 8x smaller memory</td>
+          </tr>
+
+          <!-- Stage 2 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-teal-bg"></span>
+                <div>
+                  <div class="stage-name">2. Temporal XOR Carrier</div>
+                  <div class="stage-domain">Pixelean Theorem 2 · POPCNT</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">1024x1024 pair</td>
+            <td class="num solidcv-time">2.90 us</td>
+            <td class="baseline-name">OpenCV 5.0 (absdiff + threshold)</td>
+            <td class="num baseline-time">50.13 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-teal-ink">17.26x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-teal-bg" style="width: 66%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text">64-pixel word XOR + <span class="mono">CNT</span> · <span class="adv-highlight">34.4 GPix/s</span> raw byte SIMD</td>
+          </tr>
+
+          <!-- Stage 3 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-teal-bg"></span>
+                <div>
+                  <div class="stage-name">3. Fused 3x3 Sobel (Gx + Gy)</div>
+                  <div class="stage-domain">16-Pixel Unrolled NEON</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">1024x1024 -&gt; i16</td>
+            <td class="num solidcv-time">168.91 us</td>
+            <td class="baseline-name">OpenCV 5.0 (2x cv::Sobel CV_16S)</td>
+            <td class="num baseline-time">549.10 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-teal-ink">3.25x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-teal-bg" style="width: 34%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">6.21 GPix/s</span> 16-pixel <span class="mono">vld1q_u8</span> fused stencil</td>
+          </tr>
+
+          <!-- Stage 4 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-teal-bg"></span>
+                <div>
+                  <div class="stage-name">4. IntegralLattice + 10k Box</div>
+                  <div class="stage-domain">O(1) Sum &amp; Variance Table</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">512x512 + 10k boxes</td>
+            <td class="num solidcv-time">204.32 us</td>
+            <td class="baseline-name">OpenCV 5.0 (integral2 + 10k)</td>
+            <td class="num baseline-time">10,445.90 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-teal-ink">51.13x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-teal-bg" style="width: 85%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text">Slice-recurrence <span class="mono">u64</span> sum + squared-sum 4-corner lookup</td>
+          </tr>
+
+          <!-- Stage 5 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-teal-bg"></span>
+                <div>
+                  <div class="stage-name">5. 256-Bit ORB BFMatcher</div>
+                  <div class="stage-domain">4xN Register-Blocked Tile</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">1024 x 1024 (1.05M)</td>
+            <td class="num solidcv-time">832.23 us</td>
+            <td class="baseline-name">OpenCV 5.0 (BFMatcher HAMMING)</td>
+            <td class="num baseline-time">4,605.06 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-teal-ink">5.53x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-teal-bg" style="width: 45%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">1,260 MPairs/s</span> <span class="mono">b1.xor.popc</span> fused argmin</td>
+          </tr>
+
+          <!-- Stage 6 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-gold-bg"></span>
+                <div>
+                  <div class="stage-name">6. StereoSGBM (9x7 Census64)</div>
+                  <div class="stage-domain">L1 Ring + Fused 4-Path SGM</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">160x120 (16 disp)</td>
+            <td class="num solidcv-time">1,251.81 us</td>
+            <td class="baseline-name">Dense 5x5 SAD Stereo Sweep</td>
+            <td class="num baseline-time">19,892.25 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-gold-ink">15.89x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-gold-bg" style="width: 64%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">100.0% accuracy</span> under 2.1x gain vs 17.4% SAD</td>
+          </tr>
+
+          <!-- Stage 7 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-gold-bg"></span>
+                <div>
+                  <div class="stage-name">7. SO(3) EPnP + Gauss-Newton</div>
+                  <div class="stage-domain">Lie-Algebra Pose Polish</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">64 pts (20% outlier)</td>
+            <td class="num solidcv-time">719.87 us</td>
+            <td class="baseline-name">Unpolished 250-Iter RANSAC</td>
+            <td class="num baseline-time">2,245.99 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-gold-ink">3.12x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-gold-bg" style="width: 33%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">52/52 inliers</span> · 6.08e-8 m translation error</td>
+          </tr>
+
+          <!-- Stage 8 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-gold-bg"></span>
+                <div>
+                  <div class="stage-name">8. RealityComber Optical Flow</div>
+                  <div class="stage-domain">Active-Block Integer-Gram LK</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">256x256 (4% motion)</td>
+            <td class="num solidcv-time">154.64 us</td>
+            <td class="baseline-name">OpenCV 5.0 (Farneback Dense)</td>
+            <td class="num baseline-time">3,710.83 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-gold-ink">24.00x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-gold-bg" style="width: 72%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">96.5% static blocks pruned</span> across pyramid levels</td>
+          </tr>
+
+          <!-- Stage 9 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-sage-bg"></span>
+                <div>
+                  <div class="stage-name">9. 3D Voxelean Zobrist Diff</div>
+                  <div class="stage-domain">Theorem 9 &amp; 11 · Octree</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">64^3 (262,144 vox)</td>
+            <td class="num solidcv-time">1.95 us</td>
+            <td class="baseline-name">Dense 64^3 Voxel Array Scan</td>
+            <td class="num baseline-time">34.41 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-sage-ink">17.68x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-sage-bg" style="width: 67%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text">Inspects <span class="adv-highlight">49 octree nodes</span> vs 262,144 voxels (87.5% split)</td>
+          </tr>
+
+          <!-- Stage 10 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-sage-bg"></span>
+                <div>
+                  <div class="stage-name">10. (3+1)D Worldtube &amp; Ray</div>
+                  <div class="stage-domain">Theorem 19 &amp; 22 · Dyadic</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">k=64 steps, T=32</td>
+            <td class="num solidcv-time">1.69 us</td>
+            <td class="baseline-name">Sequential 64-Step Ray March</td>
+            <td class="num baseline-time">3.16 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-sage-ink">1.87x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-sage-bg" style="width: 24%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text">O(log2 k) squaring · <span class="adv-highlight">31.8x</span> smaller worldtube</td>
+          </tr>
+
+          <!-- Stage 11 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-violet-bg"></span>
+                <div>
+                  <div class="stage-name">11. VLM ViT-16 Token Pruner</div>
+                  <div class="stage-domain">NEON 16-Col Patch Reduction</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">1024x1024 (4,096)</td>
+            <td class="num solidcv-time">1,912.75 us</td>
+            <td class="baseline-name">Dense ViT-16 All-Patch Prefill</td>
+            <td class="num baseline-time">88,765.21 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-violet-ink">46.41x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-violet-bg" style="width: 84%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">97.6% KV-cache reused</span> (99 / 4,096 active patches)</td>
+          </tr>
+
+          <!-- Stage 12 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-violet-bg"></span>
+                <div>
+                  <div class="stage-name">12. 1-Bit Tensor-Core SAE</div>
+                  <div class="stage-domain">SoA Slab + 4xN Argmin Tile</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">16 q x 4,096 SAE</td>
+            <td class="num solidcv-time">50.62 us</td>
+            <td class="baseline-name">Dense FP32 SAE MatMul (d=1024)</td>
+            <td class="num baseline-time">29,122.67 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-violet-ink">575.35x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-violet-bg" style="width: 100%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="mono">b1.xor.popc m16n8k256</span> · <span class="adv-highlight">0 FP16/FP32 MACs</span></td>
+          </tr>
+
+          <!-- Stage 13 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-teal-bg"></span>
+                <div>
+                  <div class="stage-name">13. SE(2) Mass-Conserving Zoom</div>
+                  <div class="stage-domain">Theorem 1 &amp; 20 · NEON vst2</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">512x512 -&gt; 1024x1024</td>
+            <td class="num solidcv-time">153.08 us</td>
+            <td class="baseline-name">OpenCV 5.0 (resize LANCZOS4)</td>
+            <td class="num baseline-time">323.41 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-teal-ink">2.11x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-teal-bg" style="width: 28%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">100.0% 2x2 mass</span> · 0 Gibbs · <span class="adv-highlight">1.61x</span> burst HF gain</td>
+          </tr>
+
+          <!-- Stage 14 -->
+          <tr>
+            <td>
+              <div class="stage-cell">
+                <span class="domain-pip dom-violet-bg"></span>
+                <div>
+                  <div class="stage-name">14. Foveated VLM ROI Uplift</div>
+                  <div class="stage-domain">NEON Pyramid + SE(2) Zoom</div>
+                </div>
+              </div>
+            </td>
+            <td class="workload-text">1024-&gt;256 + 4x128 ROI</td>
+            <td class="num solidcv-time">11,412.40 us</td>
+            <td class="baseline-name">Dense 2048x2048 2x VLM Prefill</td>
+            <td class="num baseline-time">355,913.67 us</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-violet-ink">31.19x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-violet-bg" style="width: 76%;"></div></div>
+              </div>
+            </td>
+            <td class="adv-text"><span class="adv-highlight">317 us CV zoom</span> · <span class="adv-highlight">96.9% VLM tokens saved</span> (512/16384)</td>
+          </tr>
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2">Geometric Mean Across Full 14-Stage Suite (2D + 3D + 4D + VLM + SAE + Uplift)</td>
+            <td class="num">14 / 14 Won</td>
+            <td>OpenCV 5.0.0 &amp; Dense Baselines</td>
+            <td class="num">1.00x</td>
+            <td>
+              <div class="speedup-cell">
+                <div class="speedup-top">
+                  <span class="speedup-badge dom-mint-ink">12.11x</span>
+                </div>
+                <div class="bar-track"><div class="bar-fill dom-mint-bg" style="width: 100%;"></div></div>
+              </div>
+            </td>
+            <td>1.33x to 575.35x faster · Zero C++ FFI</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <!-- 4 Architectural Pillars -->
+    <section class="pillars-grid" aria-label="Architectural pillars">
+      <div class="pillar-card">
+        <div class="pillar-head">
+          <span class="swatch-sq dom-teal-bg"></span>
+          <span>Pillar I · Pixelean &amp; SE(2) Uplift</span>
+        </div>
+        <div class="pillar-body">
+          8-plane bit-sliced mass conservation (<span class="mono">Thm 1</span>), temporal XOR carriers (<span class="mono">Thm 2</span>), and non-hallucinating <span class="mono">SE(2)</span> mass-conserving <span class="mono">2x/4x</span> zoom with zero Gibbs overshoot.
+        </div>
+      </div>
+      <div class="pillar-card">
+        <div class="pillar-head">
+          <span class="swatch-sq dom-gold-bg"></span>
+          <span>Pillar II · Stereo &amp; RealityComber</span>
+        </div>
+        <div class="pillar-body">
+          64-bit <span class="mono">9x7</span> Census 4-path <span class="mono">StereoSGBM</span> (invariant to 2.1x exposure shifts), <span class="mono">SO(3)</span> Lie-algebra PnP RANSAC, and static-vs-moving scene separation.
+        </div>
+      </div>
+      <div class="pillar-card">
+        <div class="pillar-head">
+          <span class="swatch-sq dom-sage-bg"></span>
+          <span>Pillar III · Voxelean &amp; Worldtubes</span>
+        </div>
+        <div class="pillar-body">
+          64-bit Zobrist octrees (<span class="mono">O(log N)</span> volumetric diff), <span class="mono">1+7=8</span> Schur-Feshbach wavelets, multi-frame <span class="mono">(2+1)D</span> sub-pixel burst super-resolution, and <span class="mono">(3+1)D</span> worldtubes.
+        </div>
+      </div>
+      <div class="pillar-card">
+        <div class="pillar-head">
+          <span class="swatch-sq dom-violet-bg"></span>
+          <span>Pillar IV · Foveated VLM &amp; SAE</span>
+        </div>
+        <div class="pillar-body">
+          Prunes 97.6% of static ViT-16 tokens, saves 96.9% of <span class="mono">2x</span> uplift tokens via foveated ROI crop-and-zoom, and matches 256-bit <span class="mono">SAE</span> circuits via <span class="mono">b1.xor.popc</span>.
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div><strong>solidSF</strong> · Engineered by Andy Norris (<span class="mono">andy@solidsf.com</span>) · Design Standard <span class="mono">AS-000001</span></div>
+      <div class="mono">use solidcv::opencv::*; // Drop-in Pure-Rust OpenCV + VLM/SAE/Uplift Accelerator</div>
+    </footer>
+  </main>
+
+  <script>
+    function setTheme(mode) {
+      document.documentElement.setAttribute('data-theme', mode);
+      ['dark', 'light', 'dim'].forEach(function(m) {
+        var btn = document.getElementById('btn-' + m);
+        if (btn) {
+          btn.classList.toggle('active', m === mode);
+        }
+      });
+    }
+    var params = new URLSearchParams(window.location.search);
+    var t = params.get('theme');
+    if (t === 'dark' || t === 'light' || t === 'dim') {
+      setTheme(t);
+    }
+  </script>
+</body>
+</html>

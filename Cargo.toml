@@ -1,0 +1,28 @@
+[package]
+name = "solidcv"
+version = "0.1.0"
+edition = "2021"
+authors = ["Andy Norris <andy@solidsf.com>", "solidSF <engineering@solidsf.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/solidsf-inc/solidcv"
+homepage = "https://github.com/solidsf-inc/solidcv"
+description = "Pure-Rust OpenCV replacement and LLM/VLM + Mechanistic Interpretability visual accelerator powered by Pixelean bit-slicing, Voxelean 3D octrees, (3+1)D Worldtubes, RealityComber, Apple Silicon NEON/Metal 3.1, and NVIDIA Grace-Blackwell GB300/GB10 Tensor Core b1.xor.popc kernels."
+keywords = ["opencv", "computer-vision", "vlm", "mechinterp", "tensor-core"]
+categories = ["computer-vision", "science", "mathematics", "hardware-support"]
+
+[workspace]
+
+[features]
+default = ["imgproc", "video", "calib3d", "features2d", "objdetect", "dnn", "mechinterp"]
+clang-runtime = []
+imgproc = []
+video = []
+calib3d = []
+features2d = []
+objdetect = []
+dnn = []
+mechinterp = []
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
