@@ -7,9 +7,11 @@
 //! of the Unified Pixelean-Voxelean Calculus and instrumented with first-class
 //! Mechanistic Interpretability (`mechinterp`) telemetry and counterfactual ablation hooks.
 
+pub mod cad_export;
 pub mod calib3d;
 pub mod cloud_ws;
 pub mod core;
+pub mod cortex;
 pub mod dnn;
 pub mod features2d;
 pub mod h3_av;
@@ -24,8 +26,12 @@ pub mod uplift;
 pub mod video;
 pub mod voxelean;
 pub mod worldtube;
+pub mod cae_analysis;
+pub mod solidcv_fx;
 
 pub use crate as opencv;
+pub use crate as solidcv;
+pub use crate::solidcv_fx as fx;
 pub use crate::core::{Error, Result};
 
 #[cfg(test)]
