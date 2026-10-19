@@ -117,6 +117,8 @@ pub enum WsEngine {
     VoxeleanOctree = 0x03,
     /// `(3+1)D Worldtube` Minkowskian causal light-cone evolution & $O(\log_2 k)$ dyadic ray march.
     Worldtube4D = 0x04,
+    /// `H3Av4k120` MiniMax H3 parity & superiority 4K60/4K120 Worldtube Geodesic + Spatial Audio + J1.3 Swarm engine.
+    H3Av4k120 = 0x05,
 }
 
 impl WsEngine {
@@ -126,6 +128,7 @@ impl WsEngine {
             0x02 => Some(Self::RealityComber),
             0x03 => Some(Self::VoxeleanOctree),
             0x04 => Some(Self::Worldtube4D),
+            0x05 => Some(Self::H3Av4k120),
             _ => None,
         }
     }
@@ -142,6 +145,8 @@ impl WsEngine {
             Self::VoxeleanOctree => 5,
             // 10 micro-USD / step ($0.010 per 1,000 (3+1)D Worldtube steps; 1.0M steps per $10 pack)
             Self::Worldtube4D => 10,
+            // 20 micro-USD / packet ($0.020 per 1,000 H3 4K60/4K120 AV packets; 500k packets per $10 pack)
+            Self::H3Av4k120 => 20,
         }
     }
 }

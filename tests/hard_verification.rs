@@ -1386,3 +1386,403 @@ fn test_17_uplift_se2_zoom_worldtube_super_resolution_and_foveated_vlm_rois() {
     assert_eq!(plan.foveal_rois.len(), 2);
     assert!(plan.token_compression_ratio > 0.90);
 }
+
+#[test]
+fn test_18_apple_metal_m4_max_m5_pro_m5_max_nocopy_uma_and_fused_kernels() {
+    use solidcv::hardware::{
+        parallel_stripe_rows, simd_bitplane_pack_u8, simd_bitplane_xor_popcnt_u64,
+        simd_fused_bitplane_xor_sobel_u8, simd_sobel_3x3_u8, simd_xor_diff_carrier_u8,
+        AppleMetalEngine, AppleSiliconChipProfile, AppleSiliconGen, GraceCoherentSlab,
+        MSeriesUmaPool, ResidencyPolicy,
+    };
+
+    // 1. Verify M4 Max, M5 Pro, and M5 Max micro-architectural profiles
+    std::env::set_var("SOLIDCV_APPLE_CHIP", "M4_MAX");
+    let m4_max = AppleSiliconChipProfile::detect();
+    assert_eq!(m4_max.generation, AppleSiliconGen::AppleM4Max);
+    assert_eq!(m4_max.gpu_cores, 40);
+    assert!((m4_max.uma_bandwidth_gbps - 546.0).abs() < 1e-6);
+
+    std::env::set_var("SOLIDCV_APPLE_CHIP", "M5_PRO");
+    let m5_pro = AppleSiliconChipProfile::detect();
+    assert_eq!(m5_pro.generation, AppleSiliconGen::AppleM5Pro);
+    assert_eq!(m5_pro.gpu_cores, 20);
+    assert!(m5_pro.has_metal4_neural_accel);
+    assert!((m5_pro.uma_bandwidth_gbps - 384.0).abs() < 1e-6);
+
+    std::env::set_var("SOLIDCV_APPLE_CHIP", "M5_MAX");
+    let m5_max = AppleSiliconChipProfile::detect();
+    assert_eq!(m5_max.generation, AppleSiliconGen::AppleM5Max);
+    assert_eq!(m5_max.gpu_cores, 40);
+    assert!(m5_max.has_metal4_neural_accel);
+    assert!((m5_max.uma_bandwidth_gbps - 614.0).abs() < 1e-6);
+
+    std::env::remove_var("SOLIDCV_APPLE_CHIP");
+    let live = AppleSiliconChipProfile::detect();
+    assert!(live.p_cores >= 1);
+    assert_eq!(live.metal_simdgroup_width, 32);
+
+    // 2. Verify fused single-pass bitplane + XOR carrier + 3x3 Sobel parity
+    let w = 128usize;
+    let h = 128usize;
+    let mut f0 = Mat::zeros(h as i32, w as i32, CV_8UC1).unwrap();
+    let mut f1 = Mat::zeros(h as i32, w as i32, CV_8UC1).unwrap();
+    for r in 0..h {
+        for c in 0..w {
+            let v0 = ((r * 23 + c * 41) & 0xFF) as u8;
+            let v1 = if (32..64).contains(&r) && (32..64).contains(&c) {
+                v0.saturating_add(45)
+            } else {
+                v0
+            };
+            f0.raw_bytes_mut()[r * w + c] = v0;
+            f1.raw_bytes_mut()[r * w + c] = v1;
+        }
+    }
+    let b0 = f0.raw_bytes();
+    let b1 = f1.raw_bytes();
+    let (pack_ref, fg_ref) = simd_bitplane_pack_u8(b1, 110);
+    let (pack_prev, _) = simd_bitplane_pack_u8(b0, 110);
+    let (xor_ref, kd_ref) = simd_xor_diff_carrier_u8(b0, b1, 15);
+    let (gx_ref, gy_ref) = simd_sobel_3x3_u8(&f1).unwrap();
+
+    let n_words = (w * h).div_ceil(64);
+    let mut bit_words = vec![0u64; n_words];
+    let mut xor_words = vec![0u64; n_words];
+    let mut gx_out = vec![0i16; w * h];
+    let mut gy_out = vec![0i16; w * h];
+    let mut mag_out = vec![0u8; w * h];
+
+    let (fg_fused, kd_fused) = simd_fused_bitplane_xor_sobel_u8(
+        b0,
+        b1,
+        w,
+        h,
+        110,
+        15,
+        &mut bit_words,
+        &mut xor_words,
+        &mut gx_out,
+        &mut gy_out,
+        &mut mag_out,
+    );
+    assert_eq!(fg_fused, fg_ref);
+    assert_eq!(kd_fused, kd_ref);
+    assert_eq!(bit_words, pack_ref);
+    assert_eq!(xor_words, xor_ref);
+    assert_eq!(gx_out, gx_ref);
+    assert_eq!(gy_out, gy_ref);
+
+    let pop_xor = simd_bitplane_xor_popcnt_u64(&pack_prev, &pack_ref);
+    let pop_ref: usize = pack_prev
+        .iter()
+        .zip(pack_ref.iter())
+        .map(|(&a, &b)| (a ^ b).count_ones() as usize)
+        .sum();
+    assert_eq!(pop_xor, pop_ref);
+
+    // 3. Verify P-core QoS worker pool parallel striping
+    assert!(MSeriesUmaPool::global().worker_count() >= 1);
+    let mut striped = vec![0u32; 256 * 64];
+    let striped_addr = striped.as_mut_ptr() as usize;
+    parallel_stripe_rows(256, 16, |r0, r1| {
+        let base = striped_addr as *mut u32;
+        for r in r0..r1 {
+            for c in 0..64 {
+                unsafe {
+                    *base.add(r * 64 + c) = (r * 64 + c) as u32;
+                }
+            }
+        }
+    });
+    assert_eq!(striped[0], 0);
+    assert_eq!(striped[256 * 64 - 1], (256 * 64 - 1) as u32);
+
+    // 4. Verify live Apple Metal 3.1 / 4.0 zero-copy compute pipeline execution on macOS
+    if let Some(eng) = AppleMetalEngine::global() {
+        assert_eq!(eng.pipelines_ready(), 6);
+        let n_px = 64 * 64;
+        let mut src_slab =
+            GraceCoherentSlab::<u8>::allocate(n_px, ResidencyPolicy::KeepOnCardHbm3e).unwrap();
+        let mut zoom_slab =
+            GraceCoherentSlab::<u8>::allocate(n_px * 4, ResidencyPolicy::KeepOnCardHbm3e).unwrap();
+        for i in 0..n_px {
+            src_slab.as_mut_slice()[i] = ((i * 17) & 0xFF) as u8;
+        }
+        eng.dispatch_se2_zoom_2x_nocopy(&src_slab, 64, 64, &mut zoom_slab)
+            .unwrap();
+        let p00 = zoom_slab.as_slice()[0] as u32
+            + zoom_slab.as_slice()[1] as u32
+            + zoom_slab.as_slice()[128] as u32
+            + zoom_slab.as_slice()[129] as u32;
+        assert_eq!(p00, (src_slab.as_slice()[0] as u32) * 4);
+
+        let mut q_slab =
+            GraceCoherentSlab::<[u64; 4]>::allocate(16, ResidencyPolicy::KeepOnCardHbm3e).unwrap();
+        let mut t_slab =
+            GraceCoherentSlab::<[u64; 4]>::allocate(16, ResidencyPolicy::KeepOnCardHbm3e).unwrap();
+        let mut out_slab =
+            GraceCoherentSlab::<[u32; 2]>::allocate(16, ResidencyPolicy::KeepOnCardHbm3e).unwrap();
+        for i in 0..16 {
+            let desc = [i as u64 + 1, (i as u64) * 7, 0xAAAA_5555, !0u64];
+            q_slab.as_mut_slice()[i] = desc;
+            t_slab.as_mut_slice()[i] = desc;
+        }
+        eng.dispatch_orb_argmin_nocopy(&q_slab, &t_slab, &mut out_slab)
+            .unwrap();
+        for i in 0..16 {
+            assert_eq!(out_slab.as_slice()[i], [i as u32, 0]);
+        }
+    }
+
+    // 5. Verify 6-kernel WebGPU WGSL suite & C-ABI / iOS Swift FFI surface
+    assert_eq!(
+        solidcv::hardware::WEBGPU_WGSL_KERNEL_SOURCE
+            .matches("@compute")
+            .count(),
+        6
+    );
+    unsafe {
+        let mut wgsl_len = 0usize;
+        let wgsl_ptr = solidcv::hardware::solidcv_c_webgpu_wgsl_source(&mut wgsl_len);
+        assert!(!wgsl_ptr.is_null() && wgsl_len > 1000);
+        let mut msl_len = 0usize;
+        let msl_ptr = solidcv::hardware::solidcv_c_apple_metal_msl_source(&mut msl_len);
+        assert!(!msl_ptr.is_null() && msl_len > 1000);
+
+        let mut c_words = vec![0u64; n_words];
+        let c_fg = solidcv::hardware::solidcv_c_bitplane_pack_u8(
+            b1.as_ptr(),
+            b1.len(),
+            110,
+            c_words.as_mut_ptr(),
+            c_words.len(),
+        );
+        assert_eq!(c_fg, fg_ref);
+        assert_eq!(c_words, pack_ref);
+    }
+}
+
+#[test]
+fn test_19_minimax_h3_parity_4k60_4k120_worldtube_audio_omni_ref_and_j13_swarm_infusion() {
+    use solidcv::cloud_ws::{SolidCvLoopbackWsServer, SolidCvWsClient, WsEngine};
+    use solidcv::h3_av::{
+        analyze_shots_native, compile_storyboard_prompt, dispatch_over_ws, h3_frame_formula_n,
+        hermite_geodesic_alpha, plan_sparse_ulysses_pdd8, run_j13_swarm_h3_review_and_infusion,
+        synthesize_delta_slab_4k120_sequence, synthesize_worldtube_intermediate_frame,
+        synthesize_worldtube_spatial_audio, H3AspectRatio, H3Language, H3ResolutionTier,
+        H3Workflow, OmniReferencePack, WorldtubeAcousticSource, H3_LEGAL_LOCAL_FRAME_COUNTS,
+    };
+
+    // 1. Verify MiniMax H3 17n+5 temporal formula and all 7 aspect ratios (21:9, 16:9, 4:3, 1:1, 3:4, 9:16, auto)
+    assert_eq!(h3_frame_formula_n(124, false).unwrap(), 7);
+    assert_eq!(h3_frame_formula_n(345, false).unwrap(), 20);
+    assert!(h3_frame_formula_n(107, false).is_err());
+    assert_eq!(h3_frame_formula_n(107, true).unwrap(), 6);
+    assert_eq!(h3_frame_formula_n(362, true).unwrap(), 21);
+    assert_eq!(H3_LEGAL_LOCAL_FRAME_COUNTS.len(), 14);
+
+    assert_eq!(
+        H3AspectRatio::Auto.dimensions_for_tier(
+            H3ResolutionTier::Draft768p,
+            "anamorphic 21:9 space battle",
+            None
+        ),
+        (1792, 768)
+    );
+    assert_eq!(
+        H3AspectRatio::Widescreen16x9.dimensions_for_tier(
+            H3ResolutionTier::UltraHD4K120,
+            "4k120 hero shot",
+            None
+        ),
+        (3840, 2160)
+    );
+    assert_eq!(
+        H3AspectRatio::Vertical9x16.dimensions_for_tier(
+            H3ResolutionTier::UltraHD4K60,
+            "vertical mobile",
+            None
+        ),
+        (2160, 3840)
+    );
+
+    // 2. Verify Hermite C2 smoothstep boundary & monotonicity invariants
+    assert!((hermite_geodesic_alpha(0.0) - 0.0).abs() < 1e-12);
+    assert!((hermite_geodesic_alpha(0.5) - 0.5).abs() < 1e-12);
+    assert!((hermite_geodesic_alpha(1.0) - 1.0).abs() < 1e-12);
+    assert!(hermite_geodesic_alpha(0.25) < hermite_geodesic_alpha(0.50));
+    assert!(hermite_geodesic_alpha(0.50) < hermite_geodesic_alpha(0.75));
+
+    // 3. Verify First-and-Last-Frame Geodesic Bridge exact boundary pinning & Shannon envelope clamping
+    let mut kf_first = Mat::zeros(64, 64, CV_8UC1).unwrap();
+    let mut kf_last = Mat::zeros(64, 64, CV_8UC1).unwrap();
+    for r in 0..64 {
+        for c in 0..64 {
+            let v = ((r * 19 + c * 37) & 0x7F) as u8 + 30;
+            kf_first.raw_bytes_mut()[(r * 64 + c) as usize] = v;
+            kf_last.raw_bytes_mut()[(r * 64 + c) as usize] = v;
+        }
+    }
+    for r in 16..32 {
+        for c in 16..32 {
+            kf_first.raw_bytes_mut()[r * 64 + c] = 210;
+            kf_last.raw_bytes_mut()[(r + 2) * 64 + (c + 3)] = 230;
+        }
+    }
+    let (f_t0, _, _, _, _) =
+        synthesize_worldtube_intermediate_frame(&kf_first, &kf_last, 0.0, 12).unwrap();
+    let (f_mid, active_w, total_w, _, _) =
+        synthesize_worldtube_intermediate_frame(&kf_first, &kf_last, 0.5, 12).unwrap();
+    let (f_t1, _, _, _, _) =
+        synthesize_worldtube_intermediate_frame(&kf_first, &kf_last, 1.0, 12).unwrap();
+    assert_eq!(f_t0.raw_bytes(), kf_first.raw_bytes());
+    assert_eq!(f_t1.raw_bytes(), kf_last.raw_bytes());
+    assert!(active_w > 0 && active_w < total_w);
+    let _ = f_mid.rows();
+
+    // 4. Verify 4K60 and 4K120 Delta-Slab Synthesis (960x540 -> 3840x2160 @ 60 & 120 FPS)
+    let mut base0 = Mat::zeros(540, 960, CV_8UC1).unwrap();
+    let mut base1 = Mat::zeros(540, 960, CV_8UC1).unwrap();
+    for i in 0..(540 * 960) {
+        let v = ((i * 29) & 0x7F) as u8 + 45;
+        base0.raw_bytes_mut()[i] = v;
+        base1.raw_bytes_mut()[i] = v;
+    }
+    for r in 220..244 {
+        for c in 420..444 {
+            base0.raw_bytes_mut()[r * 960 + c] = 225;
+            base1.raw_bytes_mut()[(r + 2) * 960 + (c + 4)] = 240;
+        }
+    }
+    let (slab_4k120, rep_4k120) = synthesize_delta_slab_4k120_sequence(
+        &base0,
+        &base1,
+        H3ResolutionTier::UltraHD4K120,
+        24,
+        4,
+        15,
+    )
+    .unwrap();
+    assert_eq!(rep_4k120.output_width, 3840);
+    assert_eq!(rep_4k120.output_height, 2160);
+    assert_eq!(rep_4k120.target_fps, 120);
+    assert_eq!(rep_4k120.temporal_multiplier, 5);
+    assert_eq!(rep_4k120.mass_conservation_rate, 1.0);
+    assert_eq!(rep_4k120.max_gibbs_overshoot, 0);
+    assert!(rep_4k120.slab_16k_metal_nocopy_aligned);
+    assert!(rep_4k120.slab_128b_tensor_core_aligned);
+    assert!(rep_4k120.meets_realtime_budget);
+    assert_eq!(slab_4k120.as_slice().len(), 3840 * 2160);
+
+    // 5. Verify Omni-Reference 16/8/8 capacity, 32 kHz / 48 kHz spatial audio, and 13 languages
+    let mut pack = OmniReferencePack::new();
+    for i in 0..12 {
+        pack.add_image_ref(&format!("ref_img_{i}"), "identity", &kf_first)
+            .unwrap();
+    }
+    for v in 0..4 {
+        pack.add_video_ref(
+            &format!("ref_vid_{v}"),
+            &[kf_first.clone(), kf_last.clone()],
+            24.0,
+        )
+        .unwrap();
+    }
+    for a in 0..4 {
+        pack.add_audio_ref(
+            &format!("ref_aud_{a}"),
+            H3Language::ALL[a],
+            48_000,
+            210.0,
+            [500.0, 1500.0, 2500.0],
+            0.3,
+        )
+        .unwrap();
+    }
+    let mut target_drift = kf_first.clone();
+    for px in target_drift.raw_bytes_mut().iter_mut() {
+        *px = px.saturating_add(40);
+    }
+    let lock_rep = pack.enforce_omni_reference_lock(&mut target_drift).unwrap();
+    assert!(lock_rep.exceeds_minimax_h3_9_3_3_capacity);
+    assert!(lock_rep.identity_locked);
+    assert!(lock_rep.photometric_drift_after < lock_rep.photometric_drift_before);
+
+    let ac_src = WorldtubeAcousticSource {
+        position_m: [2.0, 0.0, 2.0],
+        velocity_m_s: [-15.0, 0.0, -10.0],
+        base_freq_hz: 240.0,
+        transient_impulse: 0.9,
+    };
+    let tr_32k = synthesize_worldtube_spatial_audio(
+        32_000,
+        0.1,
+        &ac_src,
+        H3Language::detect("これはテストです"),
+        pack.audios.first(),
+    )
+    .unwrap();
+    let tr_48k = synthesize_worldtube_spatial_audio(
+        48_000,
+        0.1,
+        &ac_src,
+        H3Language::detect("係唔係廣東話"),
+        pack.audios.first(),
+    )
+    .unwrap();
+    assert_eq!(tr_32k.language, H3Language::Japanese);
+    assert_eq!(tr_48k.language, H3Language::Cantonese);
+    assert!(tr_32k.non_silent && tr_48k.non_silent);
+    assert!(tr_48k.doppler_shifted_freq_hz > 210.0);
+
+    // 6. Verify Zero-FFmpeg Shot Boundary Analyzer & >7,000-char SE(3) Storyboard Compiler
+    let mut inv = kf_first.clone();
+    for px in inv.raw_bytes_mut().iter_mut() {
+        *px = 255u8.wrapping_sub(*px);
+    }
+    let shots = analyze_shots_native(
+        &[kf_first.clone(), kf_first.clone(), inv.clone(), inv.clone()],
+        24,
+        25.0,
+    )
+    .unwrap();
+    assert_eq!(shots.interior_cut_frames, vec![2]);
+    assert!(shots.planned_segments.iter().all(|s| !s.crosses_detected_cut));
+
+    let sb_prompt = "Shot A: Push-in close-up on turbine rotor; Shot B: 360 orbit in wind tunnel; "
+        .repeat(120);
+    let sb_plan = compile_storyboard_prompt(&sb_prompt, H3AspectRatio::Auto, 5_000).unwrap();
+    assert!(sb_plan.exceeds_minimax_h3_7000_char_limit);
+    assert!(!sb_plan.shots.is_empty());
+
+    // 7. Verify Sparse Ulysses-Anything + PDD-8 + Theorem 7 Construct Factoring
+    let ulysses = plan_sparse_ulysses_pdd8(&base0, &base1, 345, true, true).unwrap();
+    assert!(ulysses.token_pruning_ratio > 0.90);
+    assert!(ulysses.quadratic_attention_reduction_ratio > 0.98);
+    assert!(ulysses.theorem7_saved_cross_modal_terms > 0);
+    assert!(ulysses.fits_single_80gib_container);
+    assert!(ulysses.speedup_over_dense_50step_h3 > 50.0);
+
+    // 8. Verify 10-Clone Jesse 1.3 (j1.3) Swarm Self-Infusion Report & Cloud WS Opcode 0x05
+    let swarm_report = run_j13_swarm_h3_review_and_infusion().unwrap();
+    assert_eq!(swarm_report.clone_count, 10);
+    assert!(swarm_report.all_10_clones_passed);
+    assert!(swarm_report.geometric_mean_swarm_gain > 3.0);
+
+    let ws_srv = SolidCvLoopbackWsServer::spawn_ephemeral(1).unwrap();
+    let mut ws_cli = SolidCvWsClient::connect(&ws_srv.ws_url, Some("h3-test-key")).unwrap();
+    let ws_resp = dispatch_over_ws(
+        &mut ws_cli,
+        H3Workflow::V2vaRegenerate4k120,
+        H3ResolutionTier::UltraHD4K120,
+        600,
+    )
+    .unwrap();
+    assert!(ws_resp.ok);
+    assert_eq!(ws_resp.engine, WsEngine::H3Av4k120);
+    assert_eq!(ws_resp.credits_charged_microusd, 20);
+    ws_srv.join();
+}
+
+

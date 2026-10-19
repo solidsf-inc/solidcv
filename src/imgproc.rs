@@ -206,7 +206,6 @@ pub fn pyr_down_schur_feshbach(src: &Mat) -> Result<Mat> {
     let w = src.cols();
     let nh = (h / 2).max(1);
     let nw = (w / 2).max(1);
-    let mut out = Mat::zeros(nh, nw, src.typ())?;
 
     if src.typ() == CV_8UC1 {
         let hu = h as usize;
@@ -214,57 +213,94 @@ pub fn pyr_down_schur_feshbach(src: &Mat) -> Result<Mat> {
         let nhu = nh as usize;
         let nwu = nw as usize;
         let s_bytes = src.data_bytes()?;
-        let d_bytes = out.raw_bytes_mut();
-        for r in 0..nhu {
-            let r0 = (2 * r).min(hu - 1);
-            let r1 = (2 * r + 1).min(hu - 1);
-            let row0 = &s_bytes[r0 * wu..(r0 + 1) * wu];
-            let row1 = &s_bytes[r1 * wu..(r1 + 1) * wu];
-            let d_row = &mut d_bytes[r * nwu..(r + 1) * nwu];
-            let mut c = 0usize;
-            #[cfg(target_arch = "aarch64")]
-            {
-                use std::arch::aarch64::*;
-                while c + 8 <= nwu && (2 * (c + 8)) <= wu {
-                    // SAFETY: 2*(c+8) <= wu and c+8 <= nwu are checked by loop condition.
-                    unsafe {
-                        let v0 = vld1q_u8(row0.as_ptr().add(2 * c));
-                        let v1 = vld1q_u8(row1.as_ptr().add(2 * c));
-                        let sum0 = vpaddlq_u8(v0);
-                        let sum01 = vpadalq_u8(sum0, v1);
-                        let avg8 = vrshrn_n_u16::<2>(sum01);
-                        vst1_u8(d_row.as_mut_ptr().add(c), avg8);
-                    }
-                    c += 8;
-                }
-            }
-            while c < nwu {
-                let c0 = (2 * c).min(wu - 1);
-                let c1 = (2 * c + 1).min(wu - 1);
-                let sum = (row0[c0] as u32)
-                    + (row0[c1] as u32)
-                    + (row1[c0] as u32)
-                    + (row1[c1] as u32);
-                d_row[c] = ((sum + 2) >> 2) as u8;
-                c += 1;
-            }
+        let mut d_vec = Vec::with_capacity(nhu * nwu);
+        unsafe {
+            d_vec.set_len(nhu * nwu);
         }
-    } else {
-        let cn = src.channels() as usize;
-        for r in 0..nh {
-            let r0 = (2 * r).min(h - 1);
-            let r1 = (2 * r + 1).min(h - 1);
-            for c in 0..nw {
-                let c0 = (2 * c).min(w - 1);
-                let c1 = (2 * c + 1).min(w - 1);
-                for ch in 0..cn {
-                    let dc = 0.25
-                        * (src.get_f64(r0, c0, ch)
-                            + src.get_f64(r0, c1, ch)
-                            + src.get_f64(r1, c0, ch)
-                            + src.get_f64(r1, c1, ch));
-                    out.set_f64(r, c, ch, dc);
+        let d_addr = d_vec.as_mut_ptr() as usize;
+
+        let process_rows = |r_start: usize, r_end: usize| {
+            let d_base = d_addr as *mut u8;
+            for r in r_start..r_end {
+                let r0 = (2 * r).min(hu - 1);
+                let r1 = (2 * r + 1).min(hu - 1);
+                let row0 = &s_bytes[r0 * wu..(r0 + 1) * wu];
+                let row1 = &s_bytes[r1 * wu..(r1 + 1) * wu];
+                let d_row = unsafe { std::slice::from_raw_parts_mut(d_base.add(r * nwu), nwu) };
+                let mut c = 0usize;
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    use std::arch::aarch64::*;
+                    let p0 = row0.as_ptr();
+                    let p1 = row1.as_ptr();
+                    let dp = d_row.as_mut_ptr();
+                    while c + 16 <= nwu && (2 * (c + 16)) <= wu {
+                        let v0_a = vld1q_u8(p0.add(2 * c));
+                        let v1_a = vld1q_u8(p1.add(2 * c));
+                        let v0_b = vld1q_u8(p0.add(2 * c + 16));
+                        let v1_b = vld1q_u8(p1.add(2 * c + 16));
+
+                        let sum_a = vpadalq_u8(vpaddlq_u8(v0_a), v1_a);
+                        let sum_b = vpadalq_u8(vpaddlq_u8(v0_b), v1_b);
+                        let avg_a = vrshrn_n_u16::<2>(sum_a);
+                        let avg_b = vrshrn_n_u16::<2>(sum_b);
+                        vst1q_u8(dp.add(c), vcombine_u8(avg_a, avg_b));
+                        c += 16;
+                    }
+                    while c + 8 <= nwu && (2 * (c + 8)) <= wu {
+                        let v0 = vld1q_u8(p0.add(2 * c));
+                        let v1 = vld1q_u8(p1.add(2 * c));
+                        let sum01 = vpadalq_u8(vpaddlq_u8(v0), v1);
+                        let avg8 = vrshrn_n_u16::<2>(sum01);
+                        vst1_u8(dp.add(c), avg8);
+                        c += 8;
+                    }
                 }
+                while c < nwu {
+                    let c0 = (2 * c).min(wu - 1);
+                    let c1 = (2 * c + 1).min(wu - 1);
+                    let sum = (row0[c0] as u32)
+                        + (row0[c1] as u32)
+                        + (row1[c0] as u32)
+                        + (row1[c1] as u32);
+                    d_row[c] = ((sum + 2) >> 2) as u8;
+                    c += 1;
+                }
+            }
+        };
+
+        if nhu * nwu >= 262_144 {
+            crate::hardware::parallel_stripe_rows(nhu, 64, process_rows);
+        } else {
+            process_rows(0, nhu);
+        }
+
+        record_activation(
+            "imgproc::pyr_down_schur_feshbach",
+            TheoremId::Thm20HyperVoxeleanWaveletRatio,
+            hu * wu,
+            nhu * nwu,
+            ((nh as u64) << 16) | (nw as u64),
+            &[("dimension", 2.0), ("elimination_ratio", 0.75)],
+        );
+        return Mat::from_raw_bytes(nh, nw, CV_8UC1, d_vec);
+    }
+
+    let mut out = Mat::zeros(nh, nw, src.typ())?;
+    let cn = src.channels() as usize;
+    for r in 0..nh {
+        let r0 = (2 * r).min(h - 1);
+        let r1 = (2 * r + 1).min(h - 1);
+        for c in 0..nw {
+            let c0 = (2 * c).min(w - 1);
+            let c1 = (2 * c + 1).min(w - 1);
+            for ch in 0..cn {
+                let dc = 0.25
+                    * (src.get_f64(r0, c0, ch)
+                        + src.get_f64(r0, c1, ch)
+                        + src.get_f64(r1, c0, ch)
+                        + src.get_f64(r1, c1, ch));
+                out.set_f64(r, c, ch, dc);
             }
         }
     }

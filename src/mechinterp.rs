@@ -3,76 +3,121 @@
 //! Records exact theorem activations (`Thm1..Thm24`, `J1..A2`), bitplane sparsity receipts,
 //! Schur-Feshbach wavelet elimination ratios, dihedral/octahedral symmetry orbits, and
 //! causal worldtube trajectories directly in memory with counterfactual ablation hooks.
+//!
+//! ### Apple Silicon M4 Max / M5 Pro / M5 Max Zero-Allocation Ring Buffer
+//! Hot-path `record_activation` calls write into a fixed-capacity ring buffer of stack-inline
+//! `CompactActivationRecord` entries and a 28-slot `usize` theorem array with **zero heap
+//! allocations** (`0` `String`, `0` `BTreeMap`, `0` `Vec::remove(0)` shifts). Full
+//! `MechInterpEvent` and `BTreeMap` structures are materialized lazily only when `mind_summary()`
+//! or `snapshot_mind()` is queried.
 
 use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Fast global flag indicating whether any non-default counterfactual ablation is active.
+/// Avoids TLS `RefCell` borrow and `Vec` cloning on every frame in the normal un-ablated path.
+static ABLATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Canonical identifiers for the 24 theorems of `solidSF.Unified.PixeleanVoxeleanCalculus`
 /// and the 4 spectral/topological operators (`J1`, `J2`, `A1`, `A2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum TheoremId {
     /// Thm 1: Bitplane Partition & Conservative Mass Transfer (`M_fg + M_bg = N`)
-    Thm1BitplaneMassConservation,
+    Thm1BitplaneMassConservation = 0,
     /// Thm 2: Temporal XOR Minterm Sparsity & Carrier Compression (`Delta_t = F_t ^ F_{t-1}`)
-    Thm2TemporalXorMintermSparsity,
+    Thm2TemporalXorMintermSparsity = 1,
     /// Thm 3: Shannon Cofactor Expansion & Convex Envelope Bound
-    Thm3ShannonCofactorEnvelope,
+    Thm3ShannonCofactorEnvelope = 2,
     /// Thm 4: Kinematic Common-Fate Composite Assembly (`A_core uplus A_comp`)
-    Thm4KinematicCommonFateComposite,
+    Thm4KinematicCommonFateComposite = 3,
     /// Thm 5: Dihedral D_4 Orientation Closure & Composite Stride Invariance
-    Thm5DihedralD4Closure,
+    Thm5DihedralD4Closure = 4,
     /// Thm 6: Coupled Mirror-Twin Jacobian Exactness (`det J = s_r * s_c`)
-    Thm6MirrorTwinJacobian,
+    Thm6MirrorTwinJacobian = 5,
     /// Thm 7: Visual Field Construct Factoring (`(1 + x_1)(1 + x_2) -> 1 + x_1 + x_2`)
-    Thm7ConstructFactoring,
+    Thm7ConstructFactoring = 6,
     /// Thm 8: 1px-Gridded Logical Lattice Stride Quotient Isomorphism
-    Thm8LogicalLatticeQuotient,
+    Thm8LogicalLatticeQuotient = 7,
     /// Thm 9: 3D Voxelean Octree Zobrist Localization Compression (`8 m K < 8^K`)
-    Thm9VoxeleanOctreeZobrist,
+    Thm9VoxeleanOctreeZobrist = 8,
     /// Thm 10: 3D Chiral Octahedral Point Group `O_h` (`|O_h| = 48`, 6x over `D_4`)
-    Thm10ChiralOctahedralOh,
+    Thm10ChiralOctahedralOh = 9,
     /// Thm 11: 3D Voxelean Schur-Feshbach Octree Wavelet Split (`1 + 7 = 8`, 87.5% elimination)
-    Thm11VoxeleanSchurFeshbachWavelet,
+    Thm11VoxeleanSchurFeshbachWavelet = 10,
     /// Thm 12: 3D Voxelean Discrete Exterior Calculus & Euler-Poincare Betti Identity
-    Thm12DiscreteExteriorBetti,
+    Thm12DiscreteExteriorBetti = 11,
     /// Thm 13: 3D Voxelean Gauss Divergence Flux Conservation
-    Thm13GaussDivergenceFlux,
+    Thm13GaussDivergenceFlux = 12,
     /// Thm 14: 3D Voxelean Landauer Trihedral 3-Wall Corner Deadlock Barrier
-    Thm14LandauerTrihedralBarrier,
+    Thm14LandauerTrihedralBarrier = 13,
     /// Thm 15: 3D Voxelean Multi-Bounce Ray & Plaquette Mirror Flux Conservation
-    Thm15MultiBounceRayFlux,
+    Thm15MultiBounceRayFlux = 14,
     /// Thm 16: 3D Coupled 7-Point Star Stencil GF(p) Lifting Identifiability
-    Thm16StarStencil7PointGfp,
+    Thm16StarStencil7PointGfp = 15,
     /// Thm 17: (3+1)D Worldtube Continuity & Mass Balance
-    Thm17WorldtubeContinuity,
+    Thm17WorldtubeContinuity = 16,
     /// Thm 18: (3+1)D Causal Light-Cone & CFL Horizon Pruning (`||dx||_1 <= v_max * dt`)
-    Thm18CausalLightConeCfl,
+    Thm18CausalLightConeCfl = 17,
     /// Thm 19: (3+1)D Worldtube Common-Fate Trajectory Factoring (`T * A_vox -> A_vox + 3`)
-    Thm19WorldtubeTrajectoryFactoring,
+    Thm19WorldtubeTrajectoryFactoring = 18,
     /// Thm 20: D-Dimensional Hyper-Voxelean Schur-Feshbach Wavelet Ratio (`1 - 2^{-D}`)
-    Thm20HyperVoxeleanWaveletRatio,
+    Thm20HyperVoxeleanWaveletRatio = 19,
     /// Thm 21: D-Dimensional Hyperoctahedral Symmetry Group `B_D` (`2^D * D!`)
-    Thm21HyperOctahedralGroupBd,
+    Thm21HyperOctahedralGroupBd = 20,
     /// Thm 22: D-Dimensional Unbent Ray Exponentiation (`2D < (2D)^k`)
-    Thm22UnbentRayExponentiation,
+    Thm22UnbentRayExponentiation = 21,
     /// Thm 23: D-Dimensional Bent Geodesic & Non-Abelian Commutator Renormalization
-    Thm23BentGeodesicRenormalization,
+    Thm23BentGeodesicRenormalization = 22,
     /// Thm 24: Grand Synthesis Certificate (`D >= 2, T >= 2`)
-    Thm24GrandSynthesis,
+    Thm24GrandSynthesis = 23,
     /// J1: SE(2) Frenet-Serret Jet-Space Lifting & Elastica Occlusion Bridging
-    J1Se2FrenetSerretJet,
+    J1Se2FrenetSerretJet = 24,
     /// J2: Temporal Radix-64 sfFFT Lock-In Demodulator & 2D Spectral Phase Correlation
-    J2SfFftPhaseCorrelation,
+    J2SfFftPhaseCorrelation = 25,
     /// A1: 2-Sheeted Over-Under Braid Helmholtz Green's Function
-    A1BraidHelmholtzGreens,
+    A1BraidHelmholtzGreens = 26,
     /// A2: sfFFT Relative-L2 Speculative Pruning + Sparse Braid GF(2) Solver
-    A2SpeculativeBraidGf2,
+    A2SpeculativeBraidGf2 = 27,
 }
 
+const ALL_THEOREMS: [TheoremId; 28] = [
+    TheoremId::Thm1BitplaneMassConservation,
+    TheoremId::Thm2TemporalXorMintermSparsity,
+    TheoremId::Thm3ShannonCofactorEnvelope,
+    TheoremId::Thm4KinematicCommonFateComposite,
+    TheoremId::Thm5DihedralD4Closure,
+    TheoremId::Thm6MirrorTwinJacobian,
+    TheoremId::Thm7ConstructFactoring,
+    TheoremId::Thm8LogicalLatticeQuotient,
+    TheoremId::Thm9VoxeleanOctreeZobrist,
+    TheoremId::Thm10ChiralOctahedralOh,
+    TheoremId::Thm11VoxeleanSchurFeshbachWavelet,
+    TheoremId::Thm12DiscreteExteriorBetti,
+    TheoremId::Thm13GaussDivergenceFlux,
+    TheoremId::Thm14LandauerTrihedralBarrier,
+    TheoremId::Thm15MultiBounceRayFlux,
+    TheoremId::Thm16StarStencil7PointGfp,
+    TheoremId::Thm17WorldtubeContinuity,
+    TheoremId::Thm18CausalLightConeCfl,
+    TheoremId::Thm19WorldtubeTrajectoryFactoring,
+    TheoremId::Thm20HyperVoxeleanWaveletRatio,
+    TheoremId::Thm21HyperOctahedralGroupBd,
+    TheoremId::Thm22UnbentRayExponentiation,
+    TheoremId::Thm23BentGeodesicRenormalization,
+    TheoremId::Thm24GrandSynthesis,
+    TheoremId::J1Se2FrenetSerretJet,
+    TheoremId::J2SfFftPhaseCorrelation,
+    TheoremId::A1BraidHelmholtzGreens,
+    TheoremId::A2SpeculativeBraidGf2,
+];
+
 impl TheoremId {
-    pub fn code(&self) -> &'static str {
+    #[inline]
+    pub const fn code(&self) -> &'static str {
         match self {
             Self::Thm1BitplaneMassConservation => "THM-01-BITPLANE-MASS",
             Self::Thm2TemporalXorMintermSparsity => "THM-02-XOR-MINTERM",
@@ -146,6 +191,16 @@ pub struct AblationConfig {
     pub override_cfl_radius: Option<i32>,
 }
 
+impl AblationConfig {
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        !self.ablated_bitplanes.is_empty()
+            || !self.ablated_wavelet_bands.is_empty()
+            || self.disable_xor_carrier
+            || self.override_cfl_radius.is_some()
+    }
+}
+
 /// Aggregate summary of solidcv's in-memory Mechanistic Interpretability ledger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MechInterpSummary {
@@ -156,6 +211,87 @@ pub struct MechInterpSummary {
     pub overall_sparsity_gain: f64,
     pub theorem_counts: BTreeMap<String, usize>,
     pub recent_events: Vec<MechInterpEvent>,
+}
+
+/// Zero-allocation compact ring-buffer activation record used on the hot path.
+#[derive(Debug, Clone, Copy)]
+struct CompactMetric {
+    key_bytes: [u8; 28],
+    key_len: u8,
+    val: f64,
+}
+
+impl Default for CompactMetric {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            key_bytes: [0u8; 28],
+            key_len: 0,
+            val: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompactActivationRecord {
+    seq: u64,
+    op_bytes: [u8; 48],
+    op_len: u8,
+    theorem: TheoremId,
+    metric_count: u8,
+    input_elements: usize,
+    active_elements: usize,
+    feature_hash: u64,
+    metrics: [CompactMetric; 4],
+}
+
+impl Default for CompactActivationRecord {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            seq: 0,
+            op_bytes: [0u8; 48],
+            op_len: 0,
+            theorem: TheoremId::Thm1BitplaneMassConservation,
+            metric_count: 0,
+            input_elements: 0,
+            active_elements: 0,
+            feature_hash: 0,
+            metrics: [CompactMetric::default(); 4],
+        }
+    }
+}
+
+impl CompactActivationRecord {
+    fn to_event(&self) -> MechInterpEvent {
+        let op_name = std::str::from_utf8(&self.op_bytes[..self.op_len as usize])
+            .unwrap_or("unknown")
+            .to_string();
+        let compression_ratio = if self.input_elements > 0 {
+            1.0 - (self.active_elements.min(self.input_elements) as f64
+                / self.input_elements as f64)
+        } else {
+            0.0
+        };
+        let mut metrics = BTreeMap::new();
+        for i in 0..(self.metric_count as usize).min(4) {
+            let m = &self.metrics[i];
+            let k = std::str::from_utf8(&m.key_bytes[..m.key_len as usize])
+                .unwrap_or("m")
+                .to_string();
+            metrics.insert(k, m.val);
+        }
+        MechInterpEvent {
+            seq: self.seq,
+            op_name,
+            theorem: self.theorem,
+            input_elements: self.input_elements,
+            active_elements: self.active_elements,
+            compression_ratio,
+            feature_hash: self.feature_hash,
+            metrics,
+        }
+    }
 }
 
 /// Complete state of solidcv's in-memory Mechanistic Interpretability ledger.
@@ -170,6 +306,14 @@ pub struct MechInterpMind {
     pub theorem_histogram: BTreeMap<String, usize>,
     pub cumulative_input_elements: u64,
     pub cumulative_active_elements: u64,
+    #[serde(skip)]
+    fast_ring: Vec<CompactActivationRecord>,
+    #[serde(skip)]
+    ring_head: usize,
+    #[serde(skip)]
+    ring_len: usize,
+    #[serde(skip)]
+    fast_theorem_counts: [usize; 28],
 }
 
 impl Default for MechInterpMind {
@@ -178,17 +322,77 @@ impl Default for MechInterpMind {
             enabled: true,
             max_events: 4096,
             next_seq: 1,
-            events: Vec::with_capacity(256),
+            events: Vec::new(),
             circuit_nodes: Vec::with_capacity(128),
             ablation: AblationConfig::default(),
             theorem_histogram: BTreeMap::new(),
             cumulative_input_elements: 0,
             cumulative_active_elements: 0,
+            fast_ring: vec![CompactActivationRecord::default(); 64],
+            ring_head: 0,
+            ring_len: 0,
+            fast_theorem_counts: [0usize; 28],
         }
     }
 }
 
 impl MechInterpMind {
+    /// Zero-allocation hot-path activation recorder.
+    #[inline]
+    pub fn record_fast(
+        &mut self,
+        op_name: &str,
+        theorem: TheoremId,
+        input_elements: usize,
+        active_elements: usize,
+        feature_hash: u64,
+        metrics: &[(&str, f64)],
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.cumulative_input_elements += input_elements as u64;
+        self.cumulative_active_elements += active_elements as u64;
+        self.fast_theorem_counts[theorem as usize] += 1;
+
+        if self.fast_ring.is_empty() {
+            self.fast_ring = vec![CompactActivationRecord::default(); 64];
+        }
+        let cap = self.fast_ring.len();
+        let slot_idx = if self.ring_len < cap {
+            let idx = (self.ring_head + self.ring_len) % cap;
+            self.ring_len += 1;
+            idx
+        } else {
+            let idx = self.ring_head;
+            self.ring_head = (self.ring_head + 1) % cap;
+            idx
+        };
+
+        let slot = &mut self.fast_ring[slot_idx];
+        slot.seq = seq;
+        let op_b = op_name.as_bytes();
+        let op_l = op_b.len().min(48);
+        slot.op_bytes[..op_l].copy_from_slice(&op_b[..op_l]);
+        slot.op_len = op_l as u8;
+        slot.theorem = theorem;
+        slot.input_elements = input_elements;
+        slot.active_elements = active_elements;
+        slot.feature_hash = feature_hash;
+
+        let mc = metrics.len().min(4);
+        slot.metric_count = mc as u8;
+        for (i, &(k, v)) in metrics.iter().take(mc).enumerate() {
+            let kb = k.as_bytes();
+            let kl = kb.len().min(28);
+            slot.metrics[i].key_bytes[..kl].copy_from_slice(&kb[..kl]);
+            slot.metrics[i].key_len = kl as u8;
+            slot.metrics[i].val = v;
+        }
+    }
+
     pub fn record(
         &mut self,
         op_name: &str,
@@ -230,6 +434,35 @@ impl MechInterpMind {
         });
     }
 
+    fn materialize_theorem_histogram(&self) -> BTreeMap<String, usize> {
+        let mut map = self.theorem_histogram.clone();
+        for (idx, &count) in self.fast_theorem_counts.iter().enumerate() {
+            if count > 0 {
+                *map.entry(ALL_THEOREMS[idx].code().to_string()).or_insert(0) += count;
+            }
+        }
+        map
+    }
+
+    fn materialize_recent_events(&self, max_tail: usize) -> Vec<MechInterpEvent> {
+        let mut out = Vec::with_capacity(self.ring_len.min(max_tail) + self.events.len());
+        let cap = self.fast_ring.len().max(1);
+        let skip = self.ring_len.saturating_sub(max_tail);
+        for i in skip..self.ring_len {
+            let idx = (self.ring_head + i) % cap;
+            out.push(self.fast_ring[idx].to_event());
+        }
+        if !self.events.is_empty() {
+            let e_skip = self.events.len().saturating_sub(max_tail);
+            out.extend_from_slice(&self.events[e_skip..]);
+            out.sort_by_key(|e| e.seq);
+            if out.len() > max_tail {
+                out.drain(0..(out.len() - max_tail));
+            }
+        }
+        out
+    }
+
     pub fn push_node(
         &mut self,
         kind: &str,
@@ -259,6 +492,9 @@ impl MechInterpMind {
         self.theorem_histogram.clear();
         self.cumulative_input_elements = 0;
         self.cumulative_active_elements = 0;
+        self.ring_head = 0;
+        self.ring_len = 0;
+        self.fast_theorem_counts = [0usize; 28];
     }
 
     pub fn summary(&self) -> MechInterpSummary {
@@ -268,15 +504,14 @@ impl MechInterpMind {
         } else {
             0.0
         };
-        let tail_start = self.events.len().saturating_sub(32);
         MechInterpSummary {
             total_events: (self.next_seq - 1) as usize,
             total_circuit_nodes: self.circuit_nodes.len(),
             total_input_elements: self.cumulative_input_elements,
             total_active_elements: self.cumulative_active_elements,
             overall_sparsity_gain,
-            theorem_counts: self.theorem_histogram.clone(),
-            recent_events: self.events[tail_start..].to_vec(),
+            theorem_counts: self.materialize_theorem_histogram(),
+            recent_events: self.materialize_recent_events(32),
         }
     }
 }
@@ -286,6 +521,7 @@ thread_local! {
 }
 
 /// Record a theorem activation event in solidcv's thread-local Mechanistic Interpretability ledger.
+#[inline]
 pub fn record_activation(
     op_name: &str,
     theorem: TheoremId,
@@ -295,21 +531,13 @@ pub fn record_activation(
     metrics: &[(&str, f64)],
 ) {
     SOLIDCV_MIND.with(|mind| {
-        let mut m = mind.borrow_mut();
-        if !m.enabled {
-            return;
-        }
-        let mut map = BTreeMap::new();
-        for &(k, v) in metrics {
-            map.insert(k.to_string(), v);
-        }
-        m.record(
+        mind.borrow_mut().record_fast(
             op_name,
             theorem,
             input_elements,
             active_elements,
             feature_hash,
-            map,
+            metrics,
         );
     });
 }
@@ -335,7 +563,15 @@ pub fn mind_summary() -> MechInterpSummary {
 
 /// Take a full clone of solidcv's in-memory Mechanistic Interpretability ledger.
 pub fn snapshot_mind() -> MechInterpMind {
-    SOLIDCV_MIND.with(|mind| mind.borrow().clone())
+    SOLIDCV_MIND.with(|mind| {
+        let mut snap = mind.borrow().clone();
+        snap.theorem_histogram = snap.materialize_theorem_histogram();
+        snap.events = snap.materialize_recent_events(snap.max_events);
+        snap.ring_head = 0;
+        snap.ring_len = 0;
+        snap.fast_theorem_counts = [0usize; 28];
+        snap
+    })
 }
 
 /// Clear solidcv's in-memory Mechanistic Interpretability ledger.
@@ -350,11 +586,16 @@ pub fn set_mechinterp_enabled(enabled: bool) {
 
 /// Configure counterfactual ablation parameters for causal probing of solidcv's visual engine.
 pub fn set_ablation_config(config: AblationConfig) {
+    ABLATION_ACTIVE.store(config.is_active(), Ordering::Release);
     SOLIDCV_MIND.with(|mind| mind.borrow_mut().ablation = config);
 }
 
 /// Read the active counterfactual ablation configuration.
+#[inline]
 pub fn current_ablation_config() -> AblationConfig {
+    if !ABLATION_ACTIVE.load(Ordering::Relaxed) {
+        return AblationConfig::default();
+    }
     SOLIDCV_MIND.with(|mind| mind.borrow().ablation.clone())
 }
 
@@ -369,7 +610,9 @@ where
     set_ablation_config(ablation);
     let out = f();
     let summary = mind_summary();
+    let prev_active = prev.ablation.is_active();
     SOLIDCV_MIND.with(|mind| *mind.borrow_mut() = prev);
+    ABLATION_ACTIVE.store(prev_active, Ordering::Release);
     (out, summary)
 }
 
@@ -396,6 +639,10 @@ pub struct VlmPatchPruningReceipt {
 
 /// Prune redundant VLM visual patch tokens between `prev_gray` and `curr_gray` using
 /// Pixelean temporal XOR minterm sparsity (`Theorem 2`).
+///
+/// On `aarch64` with `patch_size == 16`, uses a cache-line-aligned 4-patch-wide (`64`-byte)
+/// row-strip NEON kernel that streams contiguously across 4 patches per scanline (`vld1q_u8 x 4`,
+/// `vabdq_u8`, `vcgtq_u8`, `vsubq_u8`) instead of striding 16 times per individual patch.
 pub fn prune_vlm_patch_tokens(
     prev_gray: &crate::core::Mat,
     curr_gray: &crate::core::Mat,
@@ -410,7 +657,7 @@ pub fn prune_vlm_patch_tokens(
     let grid_cols = cols.div_ceil(ps);
     let total_patches = (grid_rows * grid_cols).max(1);
 
-    let mut active_patch_coords = Vec::new();
+    let mut active_patch_coords = Vec::with_capacity(grid_rows * grid_cols / 8);
     let mut kv_cache_reuse_mask = Vec::with_capacity(grid_rows * grid_cols);
     let min_req = min_changed_pixels_per_patch.max(1);
 
@@ -423,37 +670,89 @@ pub fn prune_vlm_patch_tokens(
         for gr in 0..grid_rows {
             let r0 = gr * ps;
             let r1 = ((gr + 1) * ps).min(rows);
-            for gc in 0..grid_cols {
-                let c0 = gc * ps;
-                let c1 = ((gc + 1) * ps).min(cols);
-                let mut changed = 0usize;
+            let mut gc = 0usize;
 
-                #[cfg(target_arch = "aarch64")]
-                if c1 - c0 == 16 && r1 - r0 <= 255 {
-                    unsafe {
-                        use std::arch::aarch64::*;
-                        let thr_vec = vdupq_n_u8(pixel_diff_threshold);
-                        let mut col_acc = vdupq_n_u8(0);
-                        let p_ptr = p_bytes.as_ptr();
-                        let c_ptr = c_bytes.as_ptr();
+            #[cfg(target_arch = "aarch64")]
+            if ps == 16 && r1 - r0 <= 255 {
+                let p_ptr = p_bytes.as_ptr();
+                let c_ptr = c_bytes.as_ptr();
+                unsafe {
+                    use std::arch::aarch64::*;
+                    let thr_vec = vdupq_n_u8(pixel_diff_threshold);
+
+                    // 4-patch (64-pixel / half M4 Max cache line) strip-mining loop
+                    while gc + 4 <= grid_cols && (gc + 4) * 16 <= cols {
+                        let c0 = gc * 16;
+                        let mut acc0 = vdupq_n_u8(0);
+                        let mut acc1 = vdupq_n_u8(0);
+                        let mut acc2 = vdupq_n_u8(0);
+                        let mut acc3 = vdupq_n_u8(0);
+
+                        for r in r0..r1 {
+                            let pr = p_ptr.add(r * p_stride + c0);
+                            let cr = c_ptr.add(r * c_stride + c0);
+                            let m0 = vcgtq_u8(vabdq_u8(vld1q_u8(pr), vld1q_u8(cr)), thr_vec);
+                            let m1 = vcgtq_u8(
+                                vabdq_u8(vld1q_u8(pr.add(16)), vld1q_u8(cr.add(16))),
+                                thr_vec,
+                            );
+                            let m2 = vcgtq_u8(
+                                vabdq_u8(vld1q_u8(pr.add(32)), vld1q_u8(cr.add(32))),
+                                thr_vec,
+                            );
+                            let m3 = vcgtq_u8(
+                                vabdq_u8(vld1q_u8(pr.add(48)), vld1q_u8(cr.add(48))),
+                                thr_vec,
+                            );
+                            acc0 = vsubq_u8(acc0, m0);
+                            acc1 = vsubq_u8(acc1, m1);
+                            acc2 = vsubq_u8(acc2, m2);
+                            acc3 = vsubq_u8(acc3, m3);
+                        }
+
+                        let ch = [
+                            vaddlvq_u8(acc0) as usize,
+                            vaddlvq_u8(acc1) as usize,
+                            vaddlvq_u8(acc2) as usize,
+                            vaddlvq_u8(acc3) as usize,
+                        ];
+                        for (k, &changed) in ch.iter().enumerate() {
+                            if changed >= min_req {
+                                active_patch_coords.push((gr, gc + k));
+                                kv_cache_reuse_mask.push(false);
+                            } else {
+                                kv_cache_reuse_mask.push(true);
+                            }
+                        }
+                        gc += 4;
+                    }
+
+                    // Single 16-wide patch tail
+                    while gc < grid_cols && (gc + 1) * 16 <= cols {
+                        let c0 = gc * 16;
+                        let mut acc = vdupq_n_u8(0);
                         for r in r0..r1 {
                             let vp = vld1q_u8(p_ptr.add(r * p_stride + c0));
                             let vc = vld1q_u8(c_ptr.add(r * c_stride + c0));
                             let mask = vcgtq_u8(vabdq_u8(vp, vc), thr_vec);
-                            // Subtracting 0xFF (-1 mod 256) adds +1 to each active column lane
-                            col_acc = vsubq_u8(col_acc, mask);
+                            acc = vsubq_u8(acc, mask);
                         }
-                        changed = vaddlvq_u8(col_acc) as usize;
+                        let changed = vaddlvq_u8(acc) as usize;
+                        if changed >= min_req {
+                            active_patch_coords.push((gr, gc));
+                            kv_cache_reuse_mask.push(false);
+                        } else {
+                            kv_cache_reuse_mask.push(true);
+                        }
+                        gc += 1;
                     }
-                    if changed >= min_req {
-                        active_patch_coords.push((gr, gc));
-                        kv_cache_reuse_mask.push(false);
-                    } else {
-                        kv_cache_reuse_mask.push(true);
-                    }
-                    continue;
                 }
+            }
 
+            while gc < grid_cols {
+                let c0 = gc * ps;
+                let c1 = ((gc + 1) * ps).min(cols);
+                let mut changed = 0usize;
                 'patch_rows: for r in r0..r1 {
                     let p_row = &p_bytes[r * p_stride + c0..r * p_stride + c1];
                     let c_row = &c_bytes[r * c_stride + c0..r * c_stride + c1];
@@ -472,6 +771,7 @@ pub fn prune_vlm_patch_tokens(
                 } else {
                     kv_cache_reuse_mask.push(true);
                 }
+                gc += 1;
             }
         }
     } else {
@@ -665,37 +965,112 @@ impl GlassBoxSignature64D {
             .fold(0x9E37_79B9_7F4A_7C15u64, |acc, &w| acc.rotate_left(7) ^ w);
 
         let mut v = vec![0.0f32; 64];
-        // [0..8]: 8 bitplane occupation ratios
+        // [0..8]: 8 bitplane occupation ratios computed in a single pass
         let bytes = gray.data_bytes()?;
+        let mut bit_counts = [0usize; 8];
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            use std::arch::aarch64::*;
+            let n = bytes.len();
+            let ptr = bytes.as_ptr();
+            let m0 = vdupq_n_u8(1 << 0);
+            let m1 = vdupq_n_u8(1 << 1);
+            let m2 = vdupq_n_u8(1 << 2);
+            let m3 = vdupq_n_u8(1 << 3);
+            let m4 = vdupq_n_u8(1 << 4);
+            let m5 = vdupq_n_u8(1 << 5);
+            let m6 = vdupq_n_u8(1 << 6);
+            let m7 = vdupq_n_u8(1 << 7);
+
+            let mut a0 = vdupq_n_u16(0);
+            let mut a1 = vdupq_n_u16(0);
+            let mut a2 = vdupq_n_u16(0);
+            let mut a3 = vdupq_n_u16(0);
+            let mut a4 = vdupq_n_u16(0);
+            let mut a5 = vdupq_n_u16(0);
+            let mut a6 = vdupq_n_u16(0);
+            let mut a7 = vdupq_n_u16(0);
+
+            let mut i = 0usize;
+            while i + 16 <= n {
+                let x = vld1q_u8(ptr.add(i));
+                a0 = vpadalq_u8(a0, vandq_u8(x, m0));
+                a1 = vpadalq_u8(a1, vshrq_n_u8::<1>(vandq_u8(x, m1)));
+                a2 = vpadalq_u8(a2, vshrq_n_u8::<2>(vandq_u8(x, m2)));
+                a3 = vpadalq_u8(a3, vshrq_n_u8::<3>(vandq_u8(x, m3)));
+                a4 = vpadalq_u8(a4, vshrq_n_u8::<4>(vandq_u8(x, m4)));
+                a5 = vpadalq_u8(a5, vshrq_n_u8::<5>(vandq_u8(x, m5)));
+                a6 = vpadalq_u8(a6, vshrq_n_u8::<6>(vandq_u8(x, m6)));
+                a7 = vpadalq_u8(a7, vshrq_n_u8::<7>(vandq_u8(x, m7)));
+                i += 16;
+                if (i & 32767) == 0 {
+                    bit_counts[0] += vaddlvq_u16(a0) as usize;
+                    bit_counts[1] += vaddlvq_u16(a1) as usize;
+                    bit_counts[2] += vaddlvq_u16(a2) as usize;
+                    bit_counts[3] += vaddlvq_u16(a3) as usize;
+                    bit_counts[4] += vaddlvq_u16(a4) as usize;
+                    bit_counts[5] += vaddlvq_u16(a5) as usize;
+                    bit_counts[6] += vaddlvq_u16(a6) as usize;
+                    bit_counts[7] += vaddlvq_u16(a7) as usize;
+                    a0 = vdupq_n_u16(0);
+                    a1 = vdupq_n_u16(0);
+                    a2 = vdupq_n_u16(0);
+                    a3 = vdupq_n_u16(0);
+                    a4 = vdupq_n_u16(0);
+                    a5 = vdupq_n_u16(0);
+                    a6 = vdupq_n_u16(0);
+                    a7 = vdupq_n_u16(0);
+                }
+            }
+            bit_counts[0] += vaddlvq_u16(a0) as usize;
+            bit_counts[1] += vaddlvq_u16(a1) as usize;
+            bit_counts[2] += vaddlvq_u16(a2) as usize;
+            bit_counts[3] += vaddlvq_u16(a3) as usize;
+            bit_counts[4] += vaddlvq_u16(a4) as usize;
+            bit_counts[5] += vaddlvq_u16(a5) as usize;
+            bit_counts[6] += vaddlvq_u16(a6) as usize;
+            bit_counts[7] += vaddlvq_u16(a7) as usize;
+            for &b in &bytes[i..] {
+                for bit in 0..8usize {
+                    bit_counts[bit] += ((b >> bit) & 1) as usize;
+                }
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        for &b in bytes {
+            for bit in 0..8usize {
+                bit_counts[bit] += ((b >> bit) & 1) as usize;
+            }
+        }
         for bit in 0..8usize {
-            let mask = 1u8 << bit;
-            let count = bytes.iter().filter(|&&b| (b & mask) != 0).count();
-            v[bit] = (count as f32) / total;
+            v[bit] = (bit_counts[bit] as f32) / total;
         }
 
         // [8..16]: Sobel directional gradient energy & D4 hash bits
         let (gx, gy) = crate::hardware::simd_sobel_3x3_u8(gray)?;
-        let mut pos_x = 0.0f32;
-        let mut neg_x = 0.0f32;
-        let mut pos_y = 0.0f32;
-        let mut neg_y = 0.0f32;
+        let mut pos_x = 0i64;
+        let mut neg_x = 0i64;
+        let mut pos_y = 0i64;
+        let mut neg_y = 0i64;
         for (&dx, &dy) in gx.iter().zip(gy.iter()) {
-            if dx > 0 {
-                pos_x += dx as f32;
+            let dxi = dx as i64;
+            let dyi = dy as i64;
+            if dxi > 0 {
+                pos_x += dxi;
             } else {
-                neg_x += (-dx as i32) as f32;
+                neg_x -= dxi;
             }
-            if dy > 0 {
-                pos_y += dy as f32;
+            if dyi > 0 {
+                pos_y += dyi;
             } else {
-                neg_y += (-dy as i32) as f32;
+                neg_y -= dyi;
             }
         }
         let grad_norm = (total * 255.0).max(1.0);
-        v[8] = pos_x / grad_norm;
-        v[9] = neg_x / grad_norm;
-        v[10] = pos_y / grad_norm;
-        v[11] = neg_y / grad_norm;
+        v[8] = (pos_x as f32) / grad_norm;
+        v[9] = (neg_x as f32) / grad_norm;
+        v[10] = (pos_y as f32) / grad_norm;
+        v[11] = (neg_y as f32) / grad_norm;
         for k in 0..4usize {
             v[12 + k] = (((d4_canonical_hash >> (k * 16)) & 0xFFFF) as f32) / 65535.0;
         }
@@ -717,6 +1092,7 @@ impl GlassBoxSignature64D {
         v[32] = 1.0;
 
         // [40..64]: 4x6 spatial foreground density grid
+        let is_u8 = gray.typ() == crate::core::CV_8UC1 && bytes.len() >= rows * cols;
         for gr in 0..4usize {
             let r0 = (gr * rows) / 4;
             let r1 = (((gr + 1) * rows) / 4).max(r0 + 1).min(rows);
@@ -724,12 +1100,22 @@ impl GlassBoxSignature64D {
                 let c0 = (gc * cols) / 6;
                 let c1 = (((gc + 1) * cols) / 6).max(c0 + 1).min(cols);
                 let mut cell_fg = 0usize;
-                let mut cell_tot = 0usize;
-                for r in r0..r1 {
-                    for c in c0..c1 {
-                        cell_tot += 1;
-                        if gray.get_f64(r as i32, c as i32, 0) >= fg_threshold as f64 {
-                            cell_fg += 1;
+                let cell_tot = (r1 - r0) * (c1 - c0);
+                if is_u8 {
+                    for r in r0..r1 {
+                        let row_slice = &bytes[r * cols + c0..r * cols + c1];
+                        for &px in row_slice {
+                            if px >= fg_threshold {
+                                cell_fg += 1;
+                            }
+                        }
+                    }
+                } else {
+                    for r in r0..r1 {
+                        for c in c0..c1 {
+                            if gray.get_f64(r as i32, c as i32, 0) >= fg_threshold as f64 {
+                                cell_fg += 1;
+                            }
                         }
                     }
                 }

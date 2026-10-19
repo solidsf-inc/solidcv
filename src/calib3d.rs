@@ -701,6 +701,30 @@ fn refine_pnp_se3(
     (rv, tv)
 }
 
+/// Cached 28-element $O_h \cap SO(3)$ + tilt manifold covering net `(r0, rotvec)`.
+fn cached_pnp_oh_seeds() -> &'static [([[f64; 3]; 3], [f64; 3]); 28] {
+    static SEEDS: std::sync::OnceLock<[([[f64; 3]; 3], [f64; 3]); 28]> = std::sync::OnceLock::new();
+    SEEDS.get_or_init(|| {
+        let mut arr = [([[0.0f64; 3]; 3], [0.0f64; 3]); 28];
+        let mut idx = 0usize;
+        for g in crate::voxelean::OhElement::proper_24() {
+            let r0 = g.to_rotation_matrix();
+            arr[idx] = (r0, rotmat_to_rotvec(&r0));
+            idx += 1;
+        }
+        for tilt in [
+            [0.25, 0.0, 0.0],
+            [-0.25, 0.0, 0.0],
+            [0.0, 0.25, 0.0],
+            [0.0, -0.25, 0.0],
+        ] {
+            arr[idx] = (rotvec_to_rotmat(tilt), tilt);
+            idx += 1;
+        }
+        arr
+    })
+}
+
 /// Fit a 6-DoF pose $(rv, tv)$ from a subset of 3D-2D correspondences using
 /// Theorem 10 ($O_h \cap SO(3)$ 24-element global manifold covering net) + POSIT + $\mathfrak{se}(3)$ LM.
 fn fit_pnp_subset(
@@ -717,27 +741,12 @@ fn fit_pnp_subset(
     if indices.len() < 4 {
         return None;
     }
-    let mut candidate_r0s: Vec<[[f64; 3]; 3]> = Vec::with_capacity(28);
-    if let Some(rv0) = init_rv {
-        candidate_r0s.push(rotvec_to_rotmat(rv0));
-    }
-    for g in crate::voxelean::OhElement::proper_24() {
-        candidate_r0s.push(g.to_rotation_matrix());
-    }
-    for tilt in [
-        [0.25, 0.0, 0.0],
-        [-0.25, 0.0, 0.0],
-        [0.0, 0.25, 0.0],
-        [0.0, -0.25, 0.0],
-    ] {
-        candidate_r0s.push(rotvec_to_rotmat(tilt));
-    }
+    let mut scored_seeds = [(f64::INFINITY, [0.0f64; 3], [0.0f64; 3]); 29];
+    let mut num_scored = 0usize;
 
-    // Score all 24+ global SO(3) manifold seeds in closed form and refine the top 4 positive-depth seeds
-    let mut scored_seeds: Vec<(f64, [f64; 3], [f64; 3])> = Vec::new();
-    for r0 in candidate_r0s {
-        let Some(t0) = solve_translation_given_r(obj, norm_xy, indices, &r0) else {
-            continue;
+    let mut eval_seed = |r0: &[[f64; 3]; 3], rv0: [f64; 3]| {
+        let Some(t0) = solve_translation_given_r(obj, norm_xy, indices, r0) else {
+            return;
         };
         let mut valid_z = true;
         let mut init_err = 0.0;
@@ -750,27 +759,50 @@ fn fit_pnp_subset(
                 valid_z = false;
                 break;
             }
-            let du = (fx * xc / zc + cx) - (img[i].x as f64);
-            let dv = (fy * yc / zc + cy) - (img[i].y as f64);
+            let inv_z = 1.0 / zc;
+            let du = (fx * xc * inv_z + cx) - (img[i].x as f64);
+            let dv = (fy * yc * inv_z + cy) - (img[i].y as f64);
             init_err += du * du + dv * dv;
         }
-        if valid_z {
-            scored_seeds.push((init_err, rotmat_to_rotvec(&r0), t0));
+        if valid_z && num_scored < 29 {
+            scored_seeds[num_scored] = (init_err, rv0, t0);
+            num_scored += 1;
         }
+    };
+
+    if let Some(rv0) = init_rv {
+        let r0 = rotvec_to_rotmat(rv0);
+        eval_seed(&r0, rv0);
     }
-    scored_seeds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    if scored_seeds.is_empty() {
-        if let Some(t0) =
-            solve_translation_given_r(obj, norm_xy, indices, &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        {
-            scored_seeds.push((1e12, [0.0, 0.0, 0.0], [t0[0], t0[1], t0[2].abs().max(1.0)]));
+    for &(ref r0, rv0) in cached_pnp_oh_seeds().iter() {
+        eval_seed(r0, rv0);
+    }
+
+    scored_seeds[..num_scored]
+        .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if num_scored == 0 {
+        if let Some(t0) = solve_translation_given_r(
+            obj,
+            norm_xy,
+            indices,
+            &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        ) {
+            scored_seeds[0] = (1e12, [0.0, 0.0, 0.0], [t0[0], t0[1], t0[2].abs().max(1.0)]);
+            num_scored = 1;
         }
     }
 
+    // For minimal 4-point RANSAC subsets, refine top 2 seeds with 14 LM steps; for full/LO sets, top 4 with 25 steps
+    let (top_k, lm_iters) = if indices.len() <= 4 {
+        (2usize.min(num_scored), 14usize)
+    } else {
+        (4usize.min(num_scored), 25usize)
+    };
+
     let mut best: Option<(f64, [f64; 3], [f64; 3])> = None;
-    for &(_init_err, seed_rv, t0) in scored_seeds.iter().take(4) {
+    for &(_init_err, seed_rv, t0) in scored_seeds[..top_k].iter() {
         let (rv_opt, tv_opt) =
-            refine_pnp_se3(obj, img, indices, fx, fy, cx, cy, seed_rv, t0, 25);
+            refine_pnp_se3(obj, img, indices, fx, fy, cx, cy, seed_rv, t0, lm_iters);
         let r_opt = rotvec_to_rotmat(rv_opt);
         let mut valid_z = true;
         let mut err_sum = 0.0;
@@ -783,8 +815,9 @@ fn fit_pnp_subset(
                 valid_z = false;
                 break;
             }
-            let du = (fx * xc / zc + cx) - (img[i].x as f64);
-            let dv = (fy * yc / zc + cy) - (img[i].y as f64);
+            let inv_z = 1.0 / zc;
+            let du = (fx * xc * inv_z + cx) - (img[i].x as f64);
+            let dv = (fy * yc * inv_z + cy) - (img[i].y as f64);
             err_sum += du * du + dv * dv;
         }
         if valid_z && (best.is_none() || err_sum < best.unwrap().0) {
@@ -863,7 +896,7 @@ pub fn solve_pnp_ransac<O: InputArray, I: InputArray>(
     _use_extrinsic_guess: bool,
     iterations_count: i32,
     reprojection_error: f32,
-    _confidence: f64,
+    confidence: f64,
     inliers: &mut Mat,
     _flags: i32,
 ) -> Result<bool> {
@@ -890,33 +923,54 @@ pub fn solve_pnp_ransac<O: InputArray, I: InputArray>(
         .collect();
 
     let thr_sq = (reprojection_error as f64) * (reprojection_error as f64);
-    let mut best_inliers: Vec<usize> = Vec::new();
+    let mut best_inliers: Vec<usize> = Vec::with_capacity(n);
+    let mut cur_inliers: Vec<usize> = Vec::with_capacity(n);
     let mut best_err = f64::INFINITY;
     let mut best_pose: Option<([f64; 3], [f64; 3])> = None;
     let mut rng = rng_seed();
-    let trials = iterations_count.clamp(24, 500) as usize;
+    let mut max_trials = iterations_count.clamp(24, 500) as usize;
+    let conf = confidence.clamp(0.5, 0.99999);
+    let log_one_minus_conf = (1.0 - conf).ln();
+    let mut subset_buf = [0usize; 6];
 
-    for t in 0..=trials {
-        let subset = if t == 0 {
-            (0..n.min(6)).collect::<Vec<_>>()
+    let mut t = 0usize;
+    while t <= max_trials {
+        let subset_len = if t == 0 {
+            let k = n.min(6);
+            for (i, slot) in subset_buf.iter_mut().take(k).enumerate() {
+                *slot = i;
+            }
+            k
         } else {
-            let mut s = Vec::with_capacity(4);
-            while s.len() < 4 {
+            let mut count = 0usize;
+            while count < 4 {
                 let idx = (xorshift64(&mut rng) as usize) % n;
-                if !s.contains(&idx) {
-                    s.push(idx);
+                if !subset_buf[..count].contains(&idx) {
+                    subset_buf[count] = idx;
+                    count += 1;
                 }
             }
-            s
+            4
         };
-        let Some((rv, tv)) =
-            fit_pnp_subset(&obj, &undist_img, &norm_xy, &subset, fx, fy, cx, cy, None)
-        else {
+        t += 1;
+
+        let Some((rv, tv)) = fit_pnp_subset(
+            &obj,
+            &undist_img,
+            &norm_xy,
+            &subset_buf[..subset_len],
+            fx,
+            fy,
+            cx,
+            cy,
+            None,
+        ) else {
             continue;
         };
         let r = rotvec_to_rotmat(rv);
-        let mut cur_inliers = Vec::with_capacity(n);
+        cur_inliers.clear();
         let mut cur_err = 0.0;
+        let mut inlier_err_sum = 0.0;
         for i in 0..n {
             let p = [obj[i].x as f64, obj[i].y as f64, obj[i].z as f64];
             let xc = r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + tv[0];
@@ -926,12 +980,14 @@ pub fn solve_pnp_ransac<O: InputArray, I: InputArray>(
                 cur_err += thr_sq;
                 continue;
             }
-            let du = (fx * xc / zc + cx) - (undist_img[i].x as f64);
-            let dv = (fy * yc / zc + cy) - (undist_img[i].y as f64);
+            let inv_z = 1.0 / zc;
+            let du = (fx * xc * inv_z + cx) - (undist_img[i].x as f64);
+            let dv = (fy * yc * inv_z + cy) - (undist_img[i].y as f64);
             let d2 = du * du + dv * dv;
             if d2 <= thr_sq {
                 cur_inliers.push(i);
                 cur_err += d2;
+                inlier_err_sum += d2;
             } else {
                 cur_err += thr_sq;
             }
@@ -939,10 +995,25 @@ pub fn solve_pnp_ransac<O: InputArray, I: InputArray>(
         if cur_inliers.len() > best_inliers.len()
             || (cur_inliers.len() == best_inliers.len() && cur_err < best_err)
         {
-            best_inliers = cur_inliers;
+            best_inliers.clear();
+            best_inliers.extend_from_slice(&cur_inliers);
             best_err = cur_err;
             best_pose = Some((rv, tv));
-            if best_inliers.len() == n && best_err < 1e-4 {
+
+            // Update adaptive RANSAC stopping bound from observed inlier ratio w = |inliers| / n
+            let w_ratio = (best_inliers.len() as f64) / (n as f64);
+            let p_all_inliers = (w_ratio * w_ratio * w_ratio * w_ratio).clamp(1e-6, 0.999999);
+            let denom = (1.0 - p_all_inliers).ln();
+            if denom < -1e-9 {
+                let adaptive_k = (log_one_minus_conf / denom).ceil() as usize;
+                max_trials = max_trials.min(adaptive_k.max(4));
+            }
+
+            if (best_inliers.len() == n && best_err < 1e-4)
+                || (best_inliers.len() >= 8
+                    && best_inliers.len() * 2 >= n
+                    && inlier_err_sum < (best_inliers.len() as f64) * 1e-5)
+            {
                 break;
             }
         }
@@ -1742,6 +1813,12 @@ pub struct StereoSGBM {
     pub mode: i32,
     work_base_cost: Vec<u16>,
     work_agg_cost: Vec<u16>,
+    work_census_l: Vec<u64>,
+    work_census_r: Vec<u64>,
+    work_unit_ring: [Vec<u16>; 3],
+    work_bonus_ring: [Vec<u16>; 3],
+    work_textured: Vec<bool>,
+    work_prev_vert: Vec<u16>,
 }
 
 impl StereoSGBM {
@@ -1779,6 +1856,12 @@ impl StereoSGBM {
             mode,
             work_base_cost: Vec::new(),
             work_agg_cost: Vec::new(),
+            work_census_l: Vec::new(),
+            work_census_r: Vec::new(),
+            work_unit_ring: [Vec::new(), Vec::new(), Vec::new()],
+            work_bonus_ring: [Vec::new(), Vec::new(), Vec::new()],
+            work_textured: Vec::new(),
+            work_prev_vert: Vec::new(),
         })
     }
 
@@ -1792,14 +1875,38 @@ impl StereoSGBM {
         }
         let h = left.rows() as usize;
         let w = left.cols() as usize;
+        let hw = h * w;
         let nd = self.num_disparities as usize;
         let rad = (self.block_size / 2).max(1) as isize;
         let invalid_disp = ((self.min_disparity - 1) * 16) as i16;
-        let mut out = vec![invalid_disp; h * w];
+        if disparity.rows() != h as i32
+            || disparity.cols() != w as i32
+            || disparity.typ() != crate::core::CV_16SC1
+            || disparity.raw_bytes().len() != hw * 2
+        {
+            *disparity = Mat::from_raw_bytes(
+                h as i32,
+                w as i32,
+                crate::core::CV_16SC1,
+                vec![0u8; hw * 2],
+            )?;
+        }
+        let out: &mut [i16] = unsafe {
+            std::slice::from_raw_parts_mut(disparity.raw_bytes_mut().as_mut_ptr() as *mut i16, hw)
+        };
+        out.fill(invalid_disp);
 
-        // Precompute 64-bit 9x7 Pixelean Census bitplane descriptor (Theorem 1 & 2) for each pixel
-        let census_l = crate::hardware::census_transform_9x7_u64(left)?;
-        let census_r = crate::hardware::census_transform_9x7_u64(right)?;
+        // Precompute 64-bit 9x7 Pixelean Census bitplane descriptor (Theorem 1 & 2) into reusable buffers
+        if self.work_census_l.len() < hw {
+            self.work_census_l.resize(hw, 0);
+        }
+        if self.work_census_r.len() < hw {
+            self.work_census_r.resize(hw, 0);
+        }
+        crate::hardware::census_transform_9x7_u64_into(left, &mut self.work_census_l[..hw])?;
+        crate::hardware::census_transform_9x7_u64_into(right, &mut self.work_census_r[..hw])?;
+        let census_l = &self.work_census_l[..hw];
+        let census_r = &self.work_census_r[..hw];
 
         let d_min = self.min_disparity;
         let d_max = self.min_disparity + self.num_disparities;
@@ -1808,7 +1915,7 @@ impl StereoSGBM {
         let p2_pen = (self.p2.max(32) as u16).max(p1_pen + 1).min(4096);
         let inf_cost = 15_000u16;
 
-        let vol_len = h * w * nd;
+        let vol_len = hw * nd;
         if self.work_base_cost.len() < vol_len {
             self.work_base_cost.resize(vol_len, 0);
         }
@@ -1818,7 +1925,13 @@ impl StereoSGBM {
         let base_cost = &mut self.work_base_cost[..vol_len];
         let agg_cost = &mut self.work_agg_cost[..vol_len];
 
-        let mut textured = vec![false; h * w];
+        if self.work_textured.len() < hw {
+            self.work_textured.resize(hw, false);
+        } else {
+            self.work_textured[..hw].fill(false);
+        }
+        let textured = &mut self.work_textured[..hw];
+
         let is_u8 = left.typ() == crate::core::CV_8UC1 && right.typ() == crate::core::CV_8UC1;
         let l_bytes = if is_u8 { left.data_bytes()? } else { &[][..] };
         let r_bytes = if is_u8 { right.data_bytes()? } else { &[][..] };
@@ -1907,8 +2020,18 @@ impl StereoSGBM {
         }
 
         // 3-row L1 ring buffer for single-pixel Census Hamming + SAD unit_cost and center_bonus
-        let mut unit_ring = [vec![0u16; w * nd], vec![0u16; w * nd], vec![0u16; w * nd]];
-        let mut bonus_ring = [vec![0u16; w * nd], vec![0u16; w * nd], vec![0u16; w * nd]];
+        let row_nd = w * nd;
+        for i in 0..3 {
+            if self.work_unit_ring[i].len() < row_nd {
+                self.work_unit_ring[i].resize(row_nd, 0);
+            }
+            if self.work_bonus_ring[i].len() < row_nd {
+                self.work_bonus_ring[i].resize(row_nd, 0);
+            }
+        }
+        let unit_ring = &mut self.work_unit_ring;
+        let bonus_ring = &mut self.work_bonus_ring;
+
         let fill_ring_row = |ry: usize, u_row: &mut [u16], b_row: &mut [u16]| {
             let cl_row = &census_l[ry * w..(ry + 1) * w];
             let cr_row = &census_r[ry * w..(ry + 1) * w];
@@ -1922,24 +2045,54 @@ impl StereoSGBM {
                     && (x as i32 - d_min) < (w as i32 - rad as i32 + 1)
                 {
                     let xru0 = (x as i32 - d_min) as usize;
+                    #[cfg(target_arch = "aarch64")]
                     if nd == 16 {
-                        let u16_s = &mut u_row[base..base + 16];
-                        let b16_s = &mut b_row[base..base + 16];
-                        for slot in 0..16 {
-                            let xru = xru0 - slot;
-                            let ham4 = ((cl ^ cr_row[xru]).count_ones() as u16) * 4;
-                            let sad1 = lc.abs_diff(rb_row[xru]) as u16;
-                            u16_s[slot] = ham4 + sad1;
-                            b16_s[slot] = ham4 + sad1 * 2;
+                        unsafe {
+                            use std::arch::aarch64::*;
+                            let cl_vec = vreinterpretq_u8_u64(vdupq_n_u64(cl));
+                            let cr_u8 = cr_row.as_ptr().add(xru0 - 15) as *const u8;
+                            let c0 = vcntq_u8(veorq_u8(cl_vec, vld1q_u8(cr_u8.add(7 * 16))));
+                            let c1 = vcntq_u8(veorq_u8(cl_vec, vld1q_u8(cr_u8.add(6 * 16))));
+                            let c2 = vcntq_u8(veorq_u8(cl_vec, vld1q_u8(cr_u8.add(5 * 16))));
+                            let c3 = vcntq_u8(veorq_u8(cl_vec, vld1q_u8(cr_u8.add(4 * 16))));
+                            let c4 = vcntq_u8(veorq_u8(cl_vec, vld1q_u8(cr_u8.add(3 * 16))));
+                            let c5 = vcntq_u8(veorq_u8(cl_vec, vld1q_u8(cr_u8.add(2 * 16))));
+                            let c6 = vcntq_u8(veorq_u8(cl_vec, vld1q_u8(cr_u8.add(16))));
+                            let c7 = vcntq_u8(veorq_u8(cl_vec, vld1q_u8(cr_u8)));
+
+                            let s01 = vpaddq_u8(c0, c1);
+                            let s23 = vpaddq_u8(c2, c3);
+                            let s45 = vpaddq_u8(c4, c5);
+                            let s67 = vpaddq_u8(c6, c7);
+                            let s0123 = vpaddq_u8(s01, s23);
+                            let s4567 = vpaddq_u8(s45, s67);
+                            let pop16 = vrev16q_u8(vpaddq_u8(s0123, s4567));
+
+                            let rb16 = vld1q_u8(rb_row.as_ptr().add(xru0 - 15));
+                            let rb_rev64 = vrev64q_u8(rb16);
+                            let rb_rev = vextq_u8::<8>(rb_rev64, rb_rev64);
+                            let sad8 = vabdq_u8(vdupq_n_u8(lc), rb_rev);
+
+                            let ham4_lo = vshlq_n_u16::<2>(vmovl_u8(vget_low_u8(pop16)));
+                            let ham4_hi = vshlq_n_u16::<2>(vmovl_high_u8(pop16));
+                            let sad1_lo = vmovl_u8(vget_low_u8(sad8));
+                            let sad1_hi = vmovl_high_u8(sad8);
+
+                            let u_ptr = u_row.as_mut_ptr().add(base);
+                            let b_ptr = b_row.as_mut_ptr().add(base);
+                            vst1q_u16(u_ptr, vaddq_u16(ham4_lo, sad1_lo));
+                            vst1q_u16(u_ptr.add(8), vaddq_u16(ham4_hi, sad1_hi));
+                            vst1q_u16(b_ptr, vaddq_u16(ham4_lo, vshlq_n_u16::<1>(sad1_lo)));
+                            vst1q_u16(b_ptr.add(8), vaddq_u16(ham4_hi, vshlq_n_u16::<1>(sad1_hi)));
                         }
-                    } else {
-                        for slot in 0..nd {
-                            let xru = xru0 - slot;
-                            let ham4 = ((cl ^ cr_row[xru]).count_ones() as u16) * 4;
-                            let sad1 = lc.abs_diff(rb_row[xru]) as u16;
-                            u_row[base + slot] = ham4 + sad1;
-                            b_row[base + slot] = ham4 + sad1 * 2;
-                        }
+                        continue;
+                    }
+                    for slot in 0..nd {
+                        let xru = xru0 - slot;
+                        let ham4 = ((cl ^ cr_row[xru]).count_ones() as u16) * 4;
+                        let sad1 = lc.abs_diff(rb_row[xru]) as u16;
+                        u_row[base + slot] = ham4 + sad1;
+                        b_row[base + slot] = ham4 + sad1 * 2;
                     }
                 } else {
                     for (slot, d) in (d_min..d_max).enumerate() {
@@ -1977,7 +2130,12 @@ impl StereoSGBM {
         let mut prev_rl = vec![inf_cost; nd];
         let mut curr_rl = vec![inf_cost; nd];
         let mut curr_vert = vec![inf_cost; nd];
-        let mut prev_vert_row = vec![inf_cost; w * nd];
+        if self.work_prev_vert.len() < row_nd {
+            self.work_prev_vert.resize(row_nd, inf_cost);
+        } else {
+            self.work_prev_vert[..row_nd].fill(inf_cost);
+        }
+        let prev_vert_row = &mut self.work_prev_vert[..row_nd];
 
         // 1 & 2. Fused forward row sweep: build base_cost for row y and immediately run L->R, T->B, R->L in L1 cache
         for y in y_start..y_end {
@@ -2065,14 +2223,35 @@ impl StereoSGBM {
                     if (x as i32 - d_max + 1) >= (rad as i32)
                         && (x as i32 - d_min) < (w as i32 - rad as i32)
                     {
+                        #[cfg(target_arch = "aarch64")]
                         if nd == 16 {
-                            for slot in 0..16 {
-                                out_c[slot] = b_c[slot]
-                                    + u_c[slot]
-                                    + u_up[slot]
-                                    + u_dn[slot]
-                                    + u_lf[slot]
-                                    + u_rt[slot];
+                            unsafe {
+                                use std::arch::aarch64::*;
+                                let s_lo = vaddq_u16(
+                                    vaddq_u16(
+                                        vaddq_u16(vld1q_u16(b_c.as_ptr()), vld1q_u16(u_c.as_ptr())),
+                                        vaddq_u16(vld1q_u16(u_up.as_ptr()), vld1q_u16(u_dn.as_ptr())),
+                                    ),
+                                    vaddq_u16(vld1q_u16(u_lf.as_ptr()), vld1q_u16(u_rt.as_ptr())),
+                                );
+                                let s_hi = vaddq_u16(
+                                    vaddq_u16(
+                                        vaddq_u16(
+                                            vld1q_u16(b_c.as_ptr().add(8)),
+                                            vld1q_u16(u_c.as_ptr().add(8)),
+                                        ),
+                                        vaddq_u16(
+                                            vld1q_u16(u_up.as_ptr().add(8)),
+                                            vld1q_u16(u_dn.as_ptr().add(8)),
+                                        ),
+                                    ),
+                                    vaddq_u16(
+                                        vld1q_u16(u_lf.as_ptr().add(8)),
+                                        vld1q_u16(u_rt.as_ptr().add(8)),
+                                    ),
+                                );
+                                vst1q_u16(out_c.as_mut_ptr(), s_lo);
+                                vst1q_u16(out_c.as_mut_ptr().add(8), s_hi);
                             }
                         } else {
                             for slot in 0..nd {
@@ -2083,6 +2262,15 @@ impl StereoSGBM {
                                     + u_lf[slot]
                                     + u_rt[slot];
                             }
+                        }
+                        #[cfg(not(target_arch = "aarch64"))]
+                        for slot in 0..nd {
+                            out_c[slot] = b_c[slot]
+                                + u_c[slot]
+                                + u_up[slot]
+                                + u_dn[slot]
+                                + u_lf[slot]
+                                + u_rt[slot];
                         }
                     } else {
                         for (slot, d) in (d_min..d_max).enumerate() {
@@ -2128,17 +2316,30 @@ impl StereoSGBM {
                 dp_step(&prev_lr, out_c, &mut curr_lr, nd, p1_pen, p2_pen, inf_cost);
                 dp_step(tb_slice, out_c, &mut curr_vert, nd, p1_pen, p2_pen, inf_cost);
                 let agg_slice = &mut agg_cost[off..off + nd];
+                #[cfg(target_arch = "aarch64")]
                 if nd == 16 {
-                    for d in 0..16 {
-                        agg_slice[d] = curr_lr[d].saturating_add(curr_vert[d]);
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let v_lo = vld1q_u16(curr_vert.as_ptr());
+                        let v_hi = vld1q_u16(curr_vert.as_ptr().add(8));
+                        vst1q_u16(
+                            agg_slice.as_mut_ptr(),
+                            vqaddq_u16(vld1q_u16(curr_lr.as_ptr()), v_lo),
+                        );
+                        vst1q_u16(
+                            agg_slice.as_mut_ptr().add(8),
+                            vqaddq_u16(vld1q_u16(curr_lr.as_ptr().add(8)), v_hi),
+                        );
+                        vst1q_u16(tb_slice.as_mut_ptr(), v_lo);
+                        vst1q_u16(tb_slice.as_mut_ptr().add(8), v_hi);
                     }
-                    tb_slice[..16].copy_from_slice(&curr_vert[..16]);
-                } else {
-                    for d in 0..nd {
-                        agg_slice[d] = curr_lr[d].saturating_add(curr_vert[d]);
-                    }
-                    tb_slice.copy_from_slice(&curr_vert);
+                    std::mem::swap(&mut prev_lr, &mut curr_lr);
+                    continue;
                 }
+                for d in 0..nd {
+                    agg_slice[d] = curr_lr[d].saturating_add(curr_vert[d]);
+                }
+                tb_slice.copy_from_slice(&curr_vert);
                 std::mem::swap(&mut prev_lr, &mut curr_lr);
             }
 
@@ -2159,14 +2360,27 @@ impl StereoSGBM {
                     inf_cost,
                 );
                 let agg_slice = &mut agg_cost[off..off + nd];
+                #[cfg(target_arch = "aarch64")]
                 if nd == 16 {
-                    for d in 0..16 {
-                        agg_slice[d] = agg_slice[d].saturating_add(curr_rl[d]);
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        vst1q_u16(
+                            agg_slice.as_mut_ptr(),
+                            vqaddq_u16(vld1q_u16(agg_slice.as_ptr()), vld1q_u16(curr_rl.as_ptr())),
+                        );
+                        vst1q_u16(
+                            agg_slice.as_mut_ptr().add(8),
+                            vqaddq_u16(
+                                vld1q_u16(agg_slice.as_ptr().add(8)),
+                                vld1q_u16(curr_rl.as_ptr().add(8)),
+                            ),
+                        );
                     }
-                } else {
-                    for d in 0..nd {
-                        agg_slice[d] = agg_slice[d].saturating_add(curr_rl[d]);
-                    }
+                    std::mem::swap(&mut prev_rl, &mut curr_rl);
+                    continue;
+                }
+                for d in 0..nd {
+                    agg_slice[d] = agg_slice[d].saturating_add(curr_rl[d]);
                 }
                 std::mem::swap(&mut prev_rl, &mut curr_rl);
             }
@@ -2198,6 +2412,8 @@ impl StereoSGBM {
                 #[cfg(target_arch = "aarch64")]
                 let used_neon_wta = if nd == 16 {
                     use std::arch::aarch64::*;
+                    const IDX_LO_ARR: [u16; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+                    const IDX_HI_ARR: [u16; 8] = [8, 9, 10, 11, 12, 13, 14, 15];
                     unsafe {
                         let inf_v = vdupq_n_u16(inf_cost);
                         let max_v = vdupq_n_u16(u16::MAX);
@@ -2216,32 +2432,31 @@ impl StereoSGBM {
                             ),
                             max_v,
                         );
-                        vst1q_u16(costs.as_mut_ptr(), s_lo);
-                        vst1q_u16(costs.as_mut_ptr().add(8), s_hi);
                         best_cost = vminvq_u16(vminq_u16(s_lo, s_hi));
                         if best_cost < inf_cost {
-                            for slot in 0..16 {
-                                if costs[slot] == best_cost {
-                                    best_slot = slot;
-                                    break;
-                                }
-                            }
+                            let idx_lo = vld1q_u16(IDX_LO_ARR.as_ptr());
+                            let idx_hi = vld1q_u16(IDX_HI_ARR.as_ptr());
+                            let bc_v = vdupq_n_u16(best_cost);
+                            let cand_lo = vbslq_u16(vceqq_u16(s_lo, bc_v), idx_lo, max_v);
+                            let cand_hi = vbslq_u16(vceqq_u16(s_hi, bc_v), idx_hi, max_v);
+                            best_slot = vminvq_u16(vminq_u16(cand_lo, cand_hi)) as usize;
+
+                            let best_v = vdupq_n_u16(best_slot as u16);
+                            let one_v = vdupq_n_u16(1);
+                            let nn_lo =
+                                vbslq_u16(vcleq_u16(vabdq_u16(idx_lo, best_v), one_v), max_v, s_lo);
+                            let nn_hi =
+                                vbslq_u16(vcleq_u16(vabdq_u16(idx_hi, best_v), one_v), max_v, s_hi);
+                            min_non_neighbor = vminvq_u16(vminq_u16(nn_lo, nn_hi));
+
                             if best_slot > 0 && best_slot + 1 < 16 {
-                                c_prev = costs[best_slot - 1];
+                                let mut sc = [0u16; 16];
+                                vst1q_u16(sc.as_mut_ptr(), s_lo);
+                                vst1q_u16(sc.as_mut_ptr().add(8), s_hi);
+                                c_prev = sc[best_slot - 1];
                                 c_curr = best_cost;
-                                c_next = costs[best_slot + 1];
+                                c_next = sc[best_slot + 1];
                             }
-                            costs[best_slot] = u16::MAX;
-                            if best_slot > 0 {
-                                costs[best_slot - 1] = u16::MAX;
-                            }
-                            if best_slot + 1 < 16 {
-                                costs[best_slot + 1] = u16::MAX;
-                            }
-                            min_non_neighbor = vminvq_u16(vminq_u16(
-                                vld1q_u16(costs.as_ptr()),
-                                vld1q_u16(costs.as_ptr().add(8)),
-                            ));
                         }
                     }
                     true
@@ -2313,8 +2528,6 @@ impl StereoSGBM {
             &[("valid_disparities", valid_count as f64)],
         );
 
-        let m = Mat::from_slice(&out)?;
-        *disparity = m.reshape(1, h as i32)?;
         Ok(())
     }
 }

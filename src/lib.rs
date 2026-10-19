@@ -12,6 +12,7 @@ pub mod cloud_ws;
 pub mod core;
 pub mod dnn;
 pub mod features2d;
+pub mod h3_av;
 pub mod hardware;
 pub mod imgproc;
 pub mod mechinterp;

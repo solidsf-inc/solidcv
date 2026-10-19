@@ -27,29 +27,116 @@ impl BitplanePartition {
         let w = gray.cols().max(0) as usize;
         let h = gray.rows().max(0) as usize;
         let n = w * h;
-        let n_words = (n + 63) / 64;
+        let n_words = n.div_ceil(64);
         let mut bitplanes: [Vec<u64>; 8] = std::array::from_fn(|_| vec![0u64; n_words]);
         let mut fg_words = vec![0u64; n_words];
         let ablation = current_ablation_config();
+        let mut ablation_mask = 0xFFu8;
+        for &ab in &ablation.ablated_bitplanes {
+            if ab < 8 {
+                ablation_mask &= !(1u8 << ab);
+            }
+        }
 
-        for r in 0..h {
-            for c in 0..w {
-                let idx = r * w + c;
-                let word = idx / 64;
-                let bit = idx % 64;
-                let mut val = gray.get_f64(r as i32, c as i32, 0).round().clamp(0.0, 255.0) as u8;
-                for &ab in &ablation.ablated_bitplanes {
-                    if ab < 8 {
-                        val &= !(1u8 << ab);
+        if gray.typ() == crate::core::CV_8UC1 {
+            if let Ok(bytes) = gray.data_bytes() {
+                let limit = n.min(bytes.len());
+                #[cfg(not(target_arch = "aarch64"))]
+                let start_idx = 0usize;
+
+                #[cfg(target_arch = "aarch64")]
+                let start_idx = unsafe {
+                    use std::arch::aarch64::*;
+                    const WEIGHTS: [u8; 16] = [
+                        1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128,
+                    ];
+                    let full_blocks = (limit / 64).min(n_words);
+                    let ptr = bytes.as_ptr();
+                    let w_vec = vld1q_u8(WEIGHTS.as_ptr());
+                    let thr_vec = vdupq_n_u8(threshold);
+                    let abl_vec = vdupq_n_u8(ablation_mask);
+                    let has_ablation = ablation_mask != 0xFF;
+
+                    #[inline(always)]
+                    unsafe fn pack64_bit(
+                        v0: uint8x16_t,
+                        v1: uint8x16_t,
+                        v2: uint8x16_t,
+                        v3: uint8x16_t,
+                        bit_mask: uint8x16_t,
+                        w_vec: uint8x16_t,
+                    ) -> u64 {
+                        let m0 = vandq_u8(vtstq_u8(v0, bit_mask), w_vec);
+                        let m1 = vandq_u8(vtstq_u8(v1, bit_mask), w_vec);
+                        let m2 = vandq_u8(vtstq_u8(v2, bit_mask), w_vec);
+                        let m3 = vandq_u8(vtstq_u8(v3, bit_mask), w_vec);
+                        let p0123 = vpaddq_u8(vpaddq_u8(m0, m1), vpaddq_u8(m2, m3));
+                        let p8 = vpadd_u8(vget_low_u8(p0123), vget_high_u8(p0123));
+                        vget_lane_u64::<0>(vreinterpret_u64_u8(p8))
+                    }
+
+                    for word in 0..full_blocks {
+                        let base = word * 64;
+                        let mut v0 = vld1q_u8(ptr.add(base));
+                        let mut v1 = vld1q_u8(ptr.add(base + 16));
+                        let mut v2 = vld1q_u8(ptr.add(base + 32));
+                        let mut v3 = vld1q_u8(ptr.add(base + 48));
+                        if has_ablation {
+                            v0 = vandq_u8(v0, abl_vec);
+                            v1 = vandq_u8(v1, abl_vec);
+                            v2 = vandq_u8(v2, abl_vec);
+                            v3 = vandq_u8(v3, abl_vec);
+                        }
+
+                        // Foreground mask (val > threshold)
+                        let f0 = vandq_u8(vcgtq_u8(v0, thr_vec), w_vec);
+                        let f1 = vandq_u8(vcgtq_u8(v1, thr_vec), w_vec);
+                        let f2 = vandq_u8(vcgtq_u8(v2, thr_vec), w_vec);
+                        let f3 = vandq_u8(vcgtq_u8(v3, thr_vec), w_vec);
+                        let fp = vpaddq_u8(vpaddq_u8(f0, f1), vpaddq_u8(f2, f3));
+                        let fp8 = vpadd_u8(vget_low_u8(fp), vget_high_u8(fp));
+                        fg_words[word] = vget_lane_u64::<0>(vreinterpret_u64_u8(fp8));
+
+                        for b in 0..8usize {
+                            if (ablation_mask & (1u8 << b)) != 0 {
+                                let bmask = vdupq_n_u8(1u8 << b);
+                                bitplanes[b][word] = pack64_bit(v0, v1, v2, v3, bmask, w_vec);
+                            }
+                        }
+                    }
+                    full_blocks * 64
+                };
+
+                for idx in start_idx..limit {
+                    let word = idx / 64;
+                    let bit = idx % 64;
+                    let val = bytes[idx] & ablation_mask;
+                    for b in 0..8 {
+                        if (val >> b) & 1 != 0 {
+                            bitplanes[b][word] |= 1u64 << bit;
+                        }
+                    }
+                    if val > threshold {
+                        fg_words[word] |= 1u64 << bit;
                     }
                 }
-                for b in 0..8 {
-                    if (val >> b) & 1 != 0 {
-                        bitplanes[b][word] |= 1u64 << bit;
+            }
+        } else {
+            for r in 0..h {
+                for c in 0..w {
+                    let idx = r * w + c;
+                    let word = idx / 64;
+                    let bit = idx % 64;
+                    let val = (gray.get_f64(r as i32, c as i32, 0).round().clamp(0.0, 255.0) as u8)
+                        & ablation_mask;
+                    for b in 0..8 {
+                        if (val >> b) & 1 != 0 {
+                            bitplanes[b][word] |= 1u64 << bit;
+                        }
                     }
-                }
-                if val > threshold {
-                    fg_words[word] |= 1u64 << bit;
+                    if val > threshold {
+                        fg_words[word] |= 1u64 << bit;
+                    }
                 }
             }
         }
@@ -134,16 +221,16 @@ impl XorMintermCarrier {
     /// Compute the temporal XOR minterm carrier between two bitplane partitions or masks.
     pub fn from_partitions(prev: &BitplanePartition, curr: &BitplanePartition) -> Self {
         let n = prev.width * prev.height;
-        let diff_words: Vec<u64> = prev
-            .fg_words
-            .iter()
-            .zip(&curr.fg_words)
-            .map(|(&a, &b)| a ^ b)
-            .collect();
-        let k_diff: usize = diff_words.iter().map(|w| w.count_ones() as usize).sum();
-        let hash = diff_words
-            .iter()
-            .fold(0x517cc1b727220a95u64, |acc, &w| acc.rotate_left(7) ^ w);
+        let nw = prev.fg_words.len().min(curr.fg_words.len());
+        let mut diff_words = Vec::with_capacity(nw);
+        let mut k_diff = 0usize;
+        let mut hash = 0x517cc1b727220a95u64;
+        for i in 0..nw {
+            let d = prev.fg_words[i] ^ curr.fg_words[i];
+            diff_words.push(d);
+            k_diff += d.count_ones() as usize;
+            hash = hash.rotate_left(7) ^ d;
+        }
 
         record_activation(
             "pixelean::XorMintermCarrier::from_partitions",

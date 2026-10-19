@@ -600,6 +600,37 @@ impl Mat {
         Self::new_rows_cols_with_default(rows, cols, typ, Scalar::all(0.0))
     }
 
+    /// Construct a `Mat` directly from a pre-allocated raw byte buffer without zero-fill overhead.
+    #[inline]
+    pub fn from_raw_bytes(rows: i32, cols: i32, typ: i32, data: Vec<u8>) -> Result<Self> {
+        if rows < 0 || cols < 0 {
+            return Err(Error::new(-215, "negative Mat dimensions"));
+        }
+        let cn = cv_mat_cn(typ) as usize;
+        let depth = cv_mat_depth(typ);
+        let dsize = depth_elem_size(depth);
+        let expected = (rows as usize)
+            .saturating_mul(cols as usize)
+            .saturating_mul(cn)
+            .saturating_mul(dsize);
+        if data.len() != expected {
+            return Err(Error::new(
+                -215,
+                format!(
+                    "Mat::from_raw_bytes length mismatch: got {}, expected {}",
+                    data.len(),
+                    expected
+                ),
+            ));
+        }
+        Ok(Self {
+            rows,
+            cols,
+            typ,
+            data,
+        })
+    }
+
     pub fn from_slice<T: DataType>(s: &[T]) -> Result<Self> {
         let typ = T::cv_type();
         let byte_len = std::mem::size_of_val(s);

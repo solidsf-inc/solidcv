@@ -16,7 +16,7 @@
 //!    camera jitter or object motion.
 //! 3. [`foveated_vlm_roi_uplift`]: Active foveated crop-and-zoom for Vision-Language Models (VLMs).
 //!    Uses [`crate::realitycomb::IntegralLattice`] ($O(1)$ variance), fused NEON Sobel gradients,
-//!    and [`crate::pixelean::TemporalXorCarrier`] to locate the top-$K$ highest-entropy ROIs in
+//!    and [`crate::pixelean::XorMintermCarrier`] to locate the top-$K$ highest-entropy ROIs in
 //!    microseconds, returning a compact global overview plus native and $2\times$-uplifted foveal crops.
 
 use crate::core::{CV_8UC1, Error, Mat, Rect, Result};
@@ -25,6 +25,7 @@ use crate::mechinterp::{TheoremId, record_activation};
 use crate::pixelean::{XorMintermCarrier, sffft_phase_correlation};
 use crate::prelude::*;
 use crate::realitycomb::IntegralLattice;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Telemetry and invariant verification report for [`zoom_se2_mass_conserving`].
 #[derive(Debug, Clone, PartialEq)]
@@ -46,18 +47,6 @@ pub struct ZoomConservationReport {
 }
 
 /// Single $2\times$ $SE(2)$ Frenet-Serret edge-directed, Schur-Feshbach mass-conserving lift on `CV_8UC1`.
-///
-/// For each parent pixel $p = I(r, c)$, synthesizes the $2\times 2$ child sub-block:
-/// $$
-/// \begin{bmatrix} c_{00} & c_{01} \\ c_{10} & c_{11} \end{bmatrix}
-/// =
-/// \begin{bmatrix}
-/// p - \delta_x - \delta_y + \delta_{xy} & p + \delta_x - \delta_y - \delta_{xy} \\
-/// p - \delta_x + \delta_y - \delta_{xy} & p + \delta_x + \delta_y + \delta_{xy}
-/// \end{bmatrix}
-/// $$
-/// where $(\delta_x, \delta_y, \delta_{xy}) \in \mathbb{Z}^3$ are anisotropic $SE(2)$ edge-directed
-/// wavelet details bounded by $|\delta_x| + |\delta_y| + |\delta_{xy}| \le \min(p - I_{\min}, I_{\max} - p)$.
 #[inline(always)]
 fn zoom_2x_pixel_scalar(
     p: i16,
@@ -109,18 +98,83 @@ fn zoom_2x_pixel_scalar(
     (c00, c01, c10, c11)
 }
 
-/// Core single-stage $2\times$ $SE(2)$ edge-directed, mass-conserving upsampler on raw `u8` slices.
-///
-/// Synthesizes each $2\times 2$ block from parent $p = I(r, c)$ using three zero-sum Haar
-/// wavelet details bounded by $|\delta_x| + |\delta_y| + |\delta_{xy}| \le \min(p - I_{\min}, I_{\max} - p)$.
-fn zoom_2x_u8_single_stage(src: &[u8], h: usize, w: usize, dst: &mut [u8]) -> (u64, u64, usize) {
-    if h == 0 || w == 0 {
-        return (0, 0, 0);
-    }
-    let dst_w = w * 2;
-    let mut parent_mass = 0u64;
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn zoom_2x_neon_8(
+    b00: std::arch::aarch64::uint8x8_t,
+    b01: std::arch::aarch64::uint8x8_t,
+    b02: std::arch::aarch64::uint8x8_t,
+    b10: std::arch::aarch64::uint8x8_t,
+    bp: std::arch::aarch64::uint8x8_t,
+    b12: std::arch::aarch64::uint8x8_t,
+    b20: std::arch::aarch64::uint8x8_t,
+    b21: std::arch::aarch64::uint8x8_t,
+    b22: std::arch::aarch64::uint8x8_t,
+) -> (
+    std::arch::aarch64::uint8x8_t,
+    std::arch::aarch64::uint8x8_t,
+    std::arch::aarch64::uint8x8_t,
+    std::arch::aarch64::uint8x8_t,
+) {
+    use std::arch::aarch64::*;
+    let b_min = vmin_u8(
+        bp,
+        vmin_u8(
+            vmin_u8(vmin_u8(b00, b01), vmin_u8(b02, b10)),
+            vmin_u8(vmin_u8(b12, b20), vmin_u8(b21, b22)),
+        ),
+    );
+    let b_max = vmax_u8(
+        bp,
+        vmax_u8(
+            vmax_u8(vmax_u8(b00, b01), vmax_u8(b02, b10)),
+            vmax_u8(vmax_u8(b12, b20), vmax_u8(b21, b22)),
+        ),
+    );
+    let headroom = vreinterpretq_s16_u16(vmovl_u8(vmin_u8(vsub_u8(bp, b_min), vsub_u8(b_max, bp))));
+    let p = vreinterpretq_s16_u16(vmovl_u8(bp));
 
-    for r in 0..h {
+    let dx_raw = vshrq_n_s16::<2>(vreinterpretq_s16_u16(vsubl_u8(b12, b10)));
+    let dy_raw = vshrq_n_s16::<2>(vreinterpretq_s16_u16(vsubl_u8(b21, b01)));
+    let dxy_raw = vshrq_n_s16::<4>(vaddq_s16(
+        vreinterpretq_s16_u16(vsubl_u8(b22, b20)),
+        vreinterpretq_s16_u16(vsubl_u8(b00, b02)),
+    ));
+
+    let hx = vshrq_n_s16::<1>(headroom);
+    let dx = vminq_s16(vmaxq_s16(dx_raw, vnegq_s16(hx)), hx);
+    let rem_y = vsubq_s16(headroom, vabsq_s16(dx));
+    let hy = vshrq_n_s16::<1>(rem_y);
+    let dy = vminq_s16(vmaxq_s16(dy_raw, vnegq_s16(hy)), hy);
+    let hxy = vsubq_s16(rem_y, vabsq_s16(dy));
+    let dxy = vminq_s16(vmaxq_s16(dxy_raw, vnegq_s16(hxy)), hxy);
+
+    let p_m_dx = vsubq_s16(p, dx);
+    let p_p_dx = vaddq_s16(p, dx);
+    let dy_m_dxy = vsubq_s16(dy, dxy);
+    let dy_p_dxy = vaddq_s16(dy, dxy);
+
+    let c00 = vmovn_u16(vreinterpretq_u16_s16(vsubq_s16(p_m_dx, dy_m_dxy)));
+    let c01 = vmovn_u16(vreinterpretq_u16_s16(vsubq_s16(p_p_dx, dy_p_dxy)));
+    let c10 = vmovn_u16(vreinterpretq_u16_s16(vaddq_s16(p_m_dx, dy_m_dxy)));
+    let c11 = vmovn_u16(vreinterpretq_u16_s16(vaddq_s16(p_p_dx, dy_p_dxy)));
+    (c00, c01, c10, c11)
+}
+
+#[inline(always)]
+fn zoom_2x_u8_rows(
+    src: &[u8],
+    h: usize,
+    w: usize,
+    r_start: usize,
+    r_end: usize,
+    dst_addr: usize,
+) -> u64 {
+    let dst_w = w * 2;
+    let dst_base = dst_addr as *mut u8;
+    let mut stripe_mass = 0u64;
+
+    for r in r_start..r_end {
         let rm1 = r.saturating_sub(1);
         let rp1 = (r + 1).min(h - 1);
         let row_rm1 = &src[rm1 * w..(rm1 + 1) * w];
@@ -134,7 +188,7 @@ fn zoom_2x_u8_single_stage(src: &[u8], h: usize, w: usize, dst: &mut [u8]) -> (u
         {
             let c1 = 1.min(w - 1);
             let p = row_r[0] as i16;
-            parent_mass += p as u64;
+            stripe_mass += p as u64;
             let (c00, c01, c10, c11) = zoom_2x_pixel_scalar(
                 p,
                 row_rm1[0] as i16,
@@ -146,10 +200,12 @@ fn zoom_2x_u8_single_stage(src: &[u8], h: usize, w: usize, dst: &mut [u8]) -> (u
                 row_rp1[0] as i16,
                 row_rp1[c1] as i16,
             );
-            dst[out_row0_off] = c00;
-            dst[out_row0_off + 1] = c01;
-            dst[out_row1_off] = c10;
-            dst[out_row1_off + 1] = c11;
+            unsafe {
+                *dst_base.add(out_row0_off) = c00;
+                *dst_base.add(out_row0_off + 1) = c01;
+                *dst_base.add(out_row1_off) = c10;
+                *dst_base.add(out_row1_off + 1) = c11;
+            }
         }
 
         let mut c = 1usize;
@@ -160,92 +216,87 @@ fn zoom_2x_u8_single_stage(src: &[u8], h: usize, w: usize, dst: &mut [u8]) -> (u
             let rm1_ptr = row_rm1.as_ptr();
             let r_ptr = row_r.as_ptr();
             let rp1_ptr = row_rp1.as_ptr();
-            let dst0_ptr = dst.as_mut_ptr().add(out_row0_off);
-            let dst1_ptr = dst.as_mut_ptr().add(out_row1_off);
+            let dst0_ptr = dst_base.add(out_row0_off);
+            let dst1_ptr = dst_base.add(out_row1_off);
+            let mut row_acc = vdupq_n_u16(0);
+
+            // 16-pixel (32-child-pixel) unrolled NEON inner loop using 8-bit vmin/vmax + vsubl_u8
+            while c + 16 < w {
+                let q00 = vld1q_u8(rm1_ptr.add(c - 1));
+                let q01 = vld1q_u8(rm1_ptr.add(c));
+                let q02 = vld1q_u8(rm1_ptr.add(c + 1));
+
+                let q10 = vld1q_u8(r_ptr.add(c - 1));
+                let qp = vld1q_u8(r_ptr.add(c));
+                let q12 = vld1q_u8(r_ptr.add(c + 1));
+
+                let q20 = vld1q_u8(rp1_ptr.add(c - 1));
+                let q21 = vld1q_u8(rp1_ptr.add(c));
+                let q22 = vld1q_u8(rp1_ptr.add(c + 1));
+
+                row_acc = vpadalq_u8(row_acc, qp);
+
+                let (c00_lo, c01_lo, c10_lo, c11_lo) = zoom_2x_neon_8(
+                    vget_low_u8(q00),
+                    vget_low_u8(q01),
+                    vget_low_u8(q02),
+                    vget_low_u8(q10),
+                    vget_low_u8(qp),
+                    vget_low_u8(q12),
+                    vget_low_u8(q20),
+                    vget_low_u8(q21),
+                    vget_low_u8(q22),
+                );
+                let (c00_hi, c01_hi, c10_hi, c11_hi) = zoom_2x_neon_8(
+                    vget_high_u8(q00),
+                    vget_high_u8(q01),
+                    vget_high_u8(q02),
+                    vget_high_u8(q10),
+                    vget_high_u8(qp),
+                    vget_high_u8(q12),
+                    vget_high_u8(q20),
+                    vget_high_u8(q21),
+                    vget_high_u8(q22),
+                );
+
+                vst2q_u8(
+                    dst0_ptr.add(2 * c),
+                    uint8x16x2_t(vcombine_u8(c00_lo, c00_hi), vcombine_u8(c01_lo, c01_hi)),
+                );
+                vst2q_u8(
+                    dst1_ptr.add(2 * c),
+                    uint8x16x2_t(vcombine_u8(c10_lo, c10_hi), vcombine_u8(c11_lo, c11_hi)),
+                );
+                c += 16;
+            }
 
             while c + 8 < w {
                 let b00 = vld1_u8(rm1_ptr.add(c - 1));
                 let b01 = vld1_u8(rm1_ptr.add(c));
                 let b02 = vld1_u8(rm1_ptr.add(c + 1));
-
                 let b10 = vld1_u8(r_ptr.add(c - 1));
                 let bp = vld1_u8(r_ptr.add(c));
                 let b12 = vld1_u8(r_ptr.add(c + 1));
-
                 let b20 = vld1_u8(rp1_ptr.add(c - 1));
                 let b21 = vld1_u8(rp1_ptr.add(c));
                 let b22 = vld1_u8(rp1_ptr.add(c + 1));
 
-                parent_mass += vaddlv_u8(bp) as u64;
-
-                let i00 = vreinterpretq_s16_u16(vmovl_u8(b00));
-                let i01 = vreinterpretq_s16_u16(vmovl_u8(b01));
-                let i02 = vreinterpretq_s16_u16(vmovl_u8(b02));
-
-                let i10 = vreinterpretq_s16_u16(vmovl_u8(b10));
-                let p = vreinterpretq_s16_u16(vmovl_u8(bp));
-                let i12 = vreinterpretq_s16_u16(vmovl_u8(b12));
-
-                let i20 = vreinterpretq_s16_u16(vmovl_u8(b20));
-                let i21 = vreinterpretq_s16_u16(vmovl_u8(b21));
-                let i22 = vreinterpretq_s16_u16(vmovl_u8(b22));
-
-                let i_min = vminq_s16(
-                    p,
-                    vminq_s16(
-                        vminq_s16(vminq_s16(i00, i01), vminq_s16(i02, i10)),
-                        vminq_s16(vminq_s16(i12, i20), vminq_s16(i21, i22)),
-                    ),
-                );
-                let i_max = vmaxq_s16(
-                    p,
-                    vmaxq_s16(
-                        vmaxq_s16(vmaxq_s16(i00, i01), vmaxq_s16(i02, i10)),
-                        vmaxq_s16(vmaxq_s16(i12, i20), vmaxq_s16(i21, i22)),
-                    ),
-                );
-                let headroom = vminq_s16(vsubq_s16(p, i_min), vsubq_s16(i_max, p));
-
-                let dx_raw = vshrq_n_s16::<2>(vsubq_s16(i12, i10));
-                let dy_raw = vshrq_n_s16::<2>(vsubq_s16(i21, i01));
-                let dxy_raw = vshrq_n_s16::<4>(vaddq_s16(vsubq_s16(i22, i20), vsubq_s16(i00, i02)));
-
-                let hx = vshrq_n_s16::<1>(headroom);
-                let dx = vminq_s16(vmaxq_s16(dx_raw, vnegq_s16(hx)), hx);
-                let rem_y = vsubq_s16(headroom, vabsq_s16(dx));
-                let hy = vshrq_n_s16::<1>(rem_y);
-                let dy = vminq_s16(vmaxq_s16(dy_raw, vnegq_s16(hy)), hy);
-                let hxy = vsubq_s16(rem_y, vabsq_s16(dy));
-                let dxy = vminq_s16(vmaxq_s16(dxy_raw, vnegq_s16(hxy)), hxy);
-
-                let p_m_dx = vsubq_s16(p, dx);
-                let p_p_dx = vaddq_s16(p, dx);
-                let dy_m_dxy = vsubq_s16(dy, dxy);
-                let dy_p_dxy = vaddq_s16(dy, dxy);
-
-                let c00_16 = vsubq_s16(p_m_dx, dy_m_dxy);
-                let c01_16 = vsubq_s16(p_p_dx, dy_p_dxy);
-                let c10_16 = vaddq_s16(p_m_dx, dy_m_dxy);
-                let c11_16 = vaddq_s16(p_p_dx, dy_p_dxy);
-
-                let c00_u8 = vmovn_u16(vreinterpretq_u16_s16(c00_16));
-                let c01_u8 = vmovn_u16(vreinterpretq_u16_s16(c01_16));
-                let c10_u8 = vmovn_u16(vreinterpretq_u16_s16(c10_16));
-                let c11_u8 = vmovn_u16(vreinterpretq_u16_s16(c11_16));
-
-                vst2_u8(dst0_ptr.add(2 * c), uint8x8x2_t(c00_u8, c01_u8));
-                vst2_u8(dst1_ptr.add(2 * c), uint8x8x2_t(c10_u8, c11_u8));
-
+                stripe_mass += vaddlv_u8(bp) as u64;
+                let (c00, c01, c10, c11) =
+                    zoom_2x_neon_8(b00, b01, b02, b10, bp, b12, b20, b21, b22);
+                vst2_u8(dst0_ptr.add(2 * c), uint8x8x2_t(c00, c01));
+                vst2_u8(dst1_ptr.add(2 * c), uint8x8x2_t(c10, c11));
                 c += 8;
             }
+
+            stripe_mass += vaddlvq_u16(row_acc) as u64;
         }
 
-        // Scalar tail & right border
         while c < w {
             let cm1 = c - 1;
             let cp1 = (c + 1).min(w - 1);
             let p = row_r[c] as i16;
-            parent_mass += p as u64;
+            stripe_mass += p as u64;
             let (c00, c01, c10, c11) = zoom_2x_pixel_scalar(
                 p,
                 row_rm1[cm1] as i16,
@@ -257,14 +308,34 @@ fn zoom_2x_u8_single_stage(src: &[u8], h: usize, w: usize, dst: &mut [u8]) -> (u
                 row_rp1[c] as i16,
                 row_rp1[cp1] as i16,
             );
-            dst[out_row0_off + 2 * c] = c00;
-            dst[out_row0_off + 2 * c + 1] = c01;
-            dst[out_row1_off + 2 * c] = c10;
-            dst[out_row1_off + 2 * c + 1] = c11;
+            unsafe {
+                *dst_base.add(out_row0_off + 2 * c) = c00;
+                *dst_base.add(out_row0_off + 2 * c + 1) = c01;
+                *dst_base.add(out_row1_off + 2 * c) = c10;
+                *dst_base.add(out_row1_off + 2 * c + 1) = c11;
+            }
             c += 1;
         }
     }
+    stripe_mass
+}
 
+/// Core single-stage $2\times$ $SE(2)$ edge-directed, mass-conserving upsampler on raw `u8` slices.
+fn zoom_2x_u8_single_stage(src: &[u8], h: usize, w: usize, dst: &mut [u8]) -> (u64, u64, usize) {
+    if h == 0 || w == 0 {
+        return (0, 0, 0);
+    }
+    let dst_addr = dst.as_mut_ptr() as usize;
+    let parent_mass = if h * w >= 262_144 {
+        let total = AtomicU64::new(0);
+        crate::hardware::parallel_stripe_rows(h, 64, |r0, r1| {
+            let m = zoom_2x_u8_rows(src, h, w, r0, r1, dst_addr);
+            total.fetch_add(m, Ordering::Relaxed);
+        });
+        total.load(Ordering::Relaxed)
+    } else {
+        zoom_2x_u8_rows(src, h, w, 0, h, dst_addr)
+    };
     let upscaled_mass = parent_mass * 4;
     let exact_blocks = h * w;
     (parent_mass, upscaled_mass, exact_blocks)
@@ -303,11 +374,15 @@ pub fn zoom_se2_mass_conserving(
     let total_blocks = h * w;
     let src_bytes = src.data_bytes()?;
 
-    let mut stage1 = Mat::zeros((h * 2) as i32, (w * 2) as i32, CV_8UC1)?;
+    let mut stage1_vec = Vec::with_capacity((h * 2) * (w * 2));
+    unsafe {
+        stage1_vec.set_len((h * 2) * (w * 2));
+    }
     let (parent_mass, stage1_mass, exact_blocks_1) =
-        zoom_2x_u8_single_stage(src_bytes, h, w, stage1.raw_bytes_mut());
+        zoom_2x_u8_single_stage(src_bytes, h, w, &mut stage1_vec);
 
     if scale_factor == 2 {
+        let stage1 = Mat::from_raw_bytes((h * 2) as i32, (w * 2) as i32, CV_8UC1, stage1_vec)?;
         let report = ZoomConservationReport {
             scale_factor: 2,
             parent_mass,
@@ -336,13 +411,13 @@ pub fn zoom_se2_mass_conserving(
     }
 
     // 4x cascaded Schur-Feshbach SE(2) lift
-    let mut stage2 = Mat::zeros((h * 4) as i32, (w * 4) as i32, CV_8UC1)?;
-    let (_, stage2_mass, exact_blocks_2) = zoom_2x_u8_single_stage(
-        stage1.data_bytes()?,
-        h * 2,
-        w * 2,
-        stage2.raw_bytes_mut(),
-    );
+    let mut stage2_vec = Vec::with_capacity((h * 4) * (w * 4));
+    unsafe {
+        stage2_vec.set_len((h * 4) * (w * 4));
+    }
+    let (_, stage2_mass, exact_blocks_2) =
+        zoom_2x_u8_single_stage(&stage1_vec, h * 2, w * 2, &mut stage2_vec);
+    let stage2 = Mat::from_raw_bytes((h * 4) as i32, (w * 4) as i32, CV_8UC1, stage2_vec)?;
     let all_exact = exact_blocks_1 == total_blocks && exact_blocks_2 == total_blocks * 4;
     let exact_parent_blocks = if all_exact { total_blocks } else { 0 };
 
@@ -495,8 +570,6 @@ pub fn worldtube_burst_super_resolve(
     let mut accum_den = vec![0.0f32; hr_h * hr_w];
     let prior_bytes = prior_hr.data_bytes()?;
 
-    // Weakly seed every high-res bin with the SE(2) mass-conserving prior so uncovered sub-pixel
-    // phases never suffer holes.
     let prior_weight = 0.05f32;
     for idx in 0..(hr_h * hr_w) {
         accum_num[idx] = (prior_bytes[idx] as f32) * prior_weight;
@@ -534,9 +607,6 @@ pub fn worldtube_burst_super_resolve(
                 let yc = (hr_y.round() as isize).clamp(0, (hr_h - 1) as isize) as usize;
                 let ref_est = prior_bytes[yc * hr_w + xc] as f32;
 
-                // Theorem 2 temporal innovation gate: reject non-rigid occlusions / impulse glitches
-                // that appear in locally flat regions of reference frame 0, while preserving genuine
-                // sub-Nyquist phase contrast in textured / aliased regions.
                 let cm1 = c.saturating_sub(1);
                 let cp1 = (c + 1).min(w - 1);
                 let r_center = ref0_bytes[r * w + c] as i32;
@@ -591,7 +661,6 @@ pub fn worldtube_burst_super_resolve(
         .collect();
 
     // 3. Two passes of Multi-Frame Peaked-Aperture Iterative Back-Projection (IBP)
-    // to deconvolve cross-phase sensor bleed without blurring distinct sub-pixel phases.
     let psf_center = 0.64f32;
     let psf_neighbor = (1.0f32 - psf_center) / ((scale_factor * scale_factor - 1).max(1) as f32);
     let mut corr_sum = vec![0.0f32; hr_h * hr_w];
@@ -626,7 +695,10 @@ pub fn worldtube_burst_super_resolve(
                         }
                     }
                     let err = (f_row[c] as f32) - sim_lr;
-                    if y_base >= 0 && y_base < hr_h as isize && x_base >= 0 && x_base < hr_w as isize
+                    if y_base >= 0
+                        && y_base < hr_h as isize
+                        && x_base >= 0
+                        && x_base < hr_w as isize
                     {
                         let idx = (y_base as usize) * hr_w + (x_base as usize);
                         corr_sum[idx] += err;
@@ -643,13 +715,11 @@ pub fn worldtube_burst_super_resolve(
         }
     }
 
-    let mut out = Mat::zeros(hr_h as i32, hr_w as i32, CV_8UC1)?;
-    {
-        let out_bytes = out.raw_bytes_mut();
-        for idx in 0..(hr_h * hr_w) {
-            out_bytes[idx] = hr_est[idx].round().clamp(0.0, 255.0) as u8;
-        }
+    let mut out_vec = Vec::with_capacity(hr_h * hr_w);
+    for &v in &hr_est {
+        out_vec.push(v.round().clamp(0.0, 255.0) as u8);
     }
+    let out = Mat::from_raw_bytes(hr_h as i32, hr_w as i32, CV_8UC1, out_vec)?;
 
     // Compute 1px sub-Nyquist forward gradient energy gain relative to the single-frame prior.
     let subpixel_tv_energy = |bytes: &[u8]| -> f64 {
@@ -779,27 +849,128 @@ fn crop_u8_rect(src: &Mat, rect: Rect) -> Result<Mat> {
     let rh = rect.height as usize;
     let rx = rect.x as usize;
     let ry = rect.y as usize;
-    let mut dst = Mat::zeros(rh as i32, rw as i32, CV_8UC1)?;
-    let dst_bytes = dst.raw_bytes_mut();
+    let mut dst_vec = Vec::with_capacity(rh * rw);
+    unsafe {
+        dst_vec.set_len(rh * rw);
+    }
     for r in 0..rh {
         let s_off = (ry + r) * w + rx;
         let d_off = r * rw;
-        dst_bytes[d_off..d_off + rw].copy_from_slice(&src_bytes[s_off..s_off + rw]);
+        dst_vec[d_off..d_off + rw].copy_from_slice(&src_bytes[s_off..s_off + rw]);
     }
-    Ok(dst)
+    Mat::from_raw_bytes(rh as i32, rw as i32, CV_8UC1, dst_vec)
+}
+
+/// Fused 2-level ($4\times 4 \to 1\times 1$) Schur-Feshbach Haar wavelet downfolding on `CV_8UC1`
+/// that reproduces two cascaded calls to [`pyr_down_schur_feshbach`] bit-for-bit without allocating
+/// or reading back the intermediate $(H/2)\times (W/2)$ buffer.
+fn pyr_down_2level_fused_u8(src: &Mat) -> Result<Mat> {
+    let h0 = src.rows() as usize;
+    let w0 = src.cols() as usize;
+    let h1 = (h0 / 2).max(1);
+    let w1 = (w0 / 2).max(1);
+    let h2 = (h1 / 2).max(1);
+    let w2 = (w1 / 2).max(1);
+    let s_bytes = src.data_bytes()?;
+
+    let mut out_vec = Vec::with_capacity(h2 * w2);
+    unsafe {
+        out_vec.set_len(h2 * w2);
+    }
+    let out_addr = out_vec.as_mut_ptr() as usize;
+
+    let process_rows = |r2_start: usize, r2_end: usize| {
+        let out_base = out_addr as *mut u8;
+        let mut l1_row0 = vec![0u8; w1];
+        let mut l1_row1 = vec![0u8; w1];
+
+        let down1_row = |r1: usize, dst1: &mut [u8]| {
+            let r00 = (2 * r1).min(h0 - 1);
+            let r01 = (2 * r1 + 1).min(h0 - 1);
+            let row0 = &s_bytes[r00 * w0..(r00 + 1) * w0];
+            let row1 = &s_bytes[r01 * w0..(r01 + 1) * w0];
+            let mut c = 0usize;
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                use std::arch::aarch64::*;
+                let p0 = row0.as_ptr();
+                let p1 = row1.as_ptr();
+                let dp = dst1.as_mut_ptr();
+                while c + 16 <= w1 && 2 * (c + 16) <= w0 {
+                    let s_a = vpadalq_u8(vpaddlq_u8(vld1q_u8(p0.add(2 * c))), vld1q_u8(p1.add(2 * c)));
+                    let s_b = vpadalq_u8(
+                        vpaddlq_u8(vld1q_u8(p0.add(2 * c + 16))),
+                        vld1q_u8(p1.add(2 * c + 16)),
+                    );
+                    vst1q_u8(
+                        dp.add(c),
+                        vcombine_u8(vrshrn_n_u16::<2>(s_a), vrshrn_n_u16::<2>(s_b)),
+                    );
+                    c += 16;
+                }
+            }
+            while c < w1 {
+                let c0 = (2 * c).min(w0 - 1);
+                let c1 = (2 * c + 1).min(w0 - 1);
+                let sum = (row0[c0] as u32)
+                    + (row0[c1] as u32)
+                    + (row1[c0] as u32)
+                    + (row1[c1] as u32);
+                dst1[c] = ((sum + 2) >> 2) as u8;
+                c += 1;
+            }
+        };
+
+        for r2 in r2_start..r2_end {
+            let r10 = (2 * r2).min(h1 - 1);
+            let r11 = (2 * r2 + 1).min(h1 - 1);
+            down1_row(r10, &mut l1_row0);
+            down1_row(r11, &mut l1_row1);
+            let out_row = unsafe { std::slice::from_raw_parts_mut(out_base.add(r2 * w2), w2) };
+            let mut c = 0usize;
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                use std::arch::aarch64::*;
+                let p0 = l1_row0.as_ptr();
+                let p1 = l1_row1.as_ptr();
+                let dp = out_row.as_mut_ptr();
+                while c + 8 <= w2 && 2 * (c + 8) <= w1 {
+                    let s = vpadalq_u8(vpaddlq_u8(vld1q_u8(p0.add(2 * c))), vld1q_u8(p1.add(2 * c)));
+                    vst1_u8(dp.add(c), vrshrn_n_u16::<2>(s));
+                    c += 8;
+                }
+            }
+            while c < w2 {
+                let c0 = (2 * c).min(w1 - 1);
+                let c1 = (2 * c + 1).min(w1 - 1);
+                let sum = (l1_row0[c0] as u32)
+                    + (l1_row0[c1] as u32)
+                    + (l1_row1[c0] as u32)
+                    + (l1_row1[c1] as u32);
+                out_row[c] = ((sum + 2) >> 2) as u8;
+                c += 1;
+            }
+        }
+    };
+
+    if h0 * w0 >= 524_288 {
+        crate::hardware::parallel_stripe_rows(h2, 32, process_rows);
+    } else {
+        process_rows(0, h2);
+    }
+
+    record_activation(
+        "imgproc::pyr_down_schur_feshbach",
+        TheoremId::Thm20HyperVoxeleanWaveletRatio,
+        h0 * w0,
+        h2 * w2,
+        ((h2 as u64) << 16) | (w2 as u64),
+        &[("dimension", 2.0), ("elimination_ratio", 0.9375)],
+    );
+    Mat::from_raw_bytes(h2 as i32, w2 as i32, CV_8UC1, out_vec)
 }
 
 /// Active Foveated Saliency Crop-and-Zoom for Vision-Language Models (VLMs).
-///
-/// Instead of letting a VLM crush a high-resolution frame into a blurry global thumbnail (or paying
-/// $O(N^2)$ attention across $16,384+$ dense high-res tokens), this operator:
-/// 1. Downfolds the global scene via [`pyr_down_schur_feshbach`] for low-cost global context.
-/// 2. Evaluates [`IntegralLattice`] $O(1)$ box variance, local edge gradient density, and optional
-///    [`XorMintermCarrier`] motion density across a strided candidate grid.
-/// 3. Applies Non-Maximum Suppression (NMS) to select the top-$K$ highest-information ROIs.
-/// 4. Crops each salient ROI at native sensor resolution and applies [`zoom_se2_mass_conserving`]
-///    ($2\times$ edge-directed mass-conserving uplift) so small text, gauges, and fine edges are
-///    cleanly resolved by the ViT patch tokenizer.
 pub fn foveated_vlm_roi_uplift(
     high_res_curr: &Mat,
     high_res_prev: Option<&Mat>,
@@ -816,10 +987,12 @@ pub fn foveated_vlm_roi_uplift(
     let roi = config.roi_size.min(h).min(w).max(16);
     let patch = config.vit_patch_size.max(1);
 
-    // 1. Build Schur-Feshbach global overview pyramid without cloning high_res_curr on level 0
+    // 1. Build Schur-Feshbach global overview pyramid (fusing 2-level downfold when ds_levels == 2)
     let ds_levels = config.global_downsample_levels;
     let global_overview = if ds_levels == 0 {
         high_res_curr.clone()
+    } else if ds_levels == 2 && h >= 4 && w >= 4 {
+        pyr_down_2level_fused_u8(high_res_curr)?
     } else {
         let mut pyr = pyr_down_schur_feshbach(high_res_curr)?;
         for _ in 1..ds_levels {
@@ -840,55 +1013,127 @@ pub fn foveated_vlm_roi_uplift(
     let src_bytes = high_res_curr.data_bytes()?;
     let mut candidates: Vec<(Rect, f64)> = Vec::new();
 
-    let mut y = 0usize;
-    while y + roi <= h {
-        let mut x = 0usize;
-        while x + roi <= w {
-            let ix0 = (x >> ds_shift) as i32;
-            let iy0 = (y >> ds_shift) as i32;
-            let ix1 = (((x + roi) >> ds_shift).max((x >> ds_shift) + 1)) as i32;
-            let iy1 = (((y + roi) >> ds_shift).max((y >> ds_shift) + 1)) as i32;
-            let (_, std_dev) = integral.rect_mean_std(ix0, iy0, ix1, iy1);
+    // When stride is a multiple of 4 (true for standard roi_size >= 32), precompute a 2D integral
+    // table over the 4x4 strided gradient lattice (sr = 4*gr + 2, sc = 4*gc + 2) so overlapping
+    // ROI windows query gradient energy in O(1) instead of rescanning 4x!
+    if stride % 4 == 0 && h >= 6 && w >= 6 && roi >= 8 {
+        let gh = (h - 3) / 4;
+        let gw = (w - 3) / 4;
+        let gw1 = gw + 1;
+        let mut grad_sat = vec![0u32; (gh + 1) * gw1];
 
-            // Fast strided horizontal + vertical gradient sample inside candidate window
-            let mut grad_sum = 0u64;
-            let mut grad_samples = 0usize;
-            for sr in (y + 2..y + roi - 2).step_by(4) {
-                let row = &src_bytes[sr * w..(sr + 1) * w];
-                let row_dn = &src_bytes[(sr + 1) * w..(sr + 2) * w];
-                for sc in (x + 2..x + roi - 2).step_by(4) {
-                    let gx = (row[sc + 1] as i32 - row[sc - 1] as i32).unsigned_abs() as u64;
-                    let gy = (row_dn[sc] as i32 - row[sc] as i32).unsigned_abs() as u64;
-                    grad_sum += gx + gy;
-                    grad_samples += 1;
-                }
+        for gr in 0..gh {
+            let sr = 4 * gr + 2;
+            let row = &src_bytes[sr * w..(sr + 1) * w];
+            let row_dn = &src_bytes[(sr + 1) * w..(sr + 2) * w];
+            let prev_sat_off = gr * gw1;
+            let curr_sat_off = (gr + 1) * gw1;
+            let mut row_acc = 0u32;
+            for gc in 0..gw {
+                let sc = 4 * gc + 2;
+                let gx = row[sc + 1].abs_diff(row[sc - 1]) as u32;
+                let gy = row_dn[sc].abs_diff(row[sc]) as u32;
+                row_acc += gx + gy;
+                grad_sat[curr_sat_off + gc + 1] = grad_sat[prev_sat_off + gc + 1] + row_acc;
             }
-            let mean_grad = if grad_samples > 0 {
-                grad_sum as f64 / grad_samples as f64
-            } else {
-                0.0
-            };
+        }
 
-            let xor_boost = if let Some(ref carrier) = xor_carrier {
-                let cx = (x + roi / 2) as i32;
-                let cy = (y + roi / 2) as i32;
-                if carrier.patch_has_activity(cx, cy, (roi / 2) as i32) {
-                    25.0
+        let mut y = 0usize;
+        while y + roi <= h {
+            let gr0 = y / 4;
+            let gr1 = ((y + roi - 4).div_ceil(4)).min(gh);
+            let s_rows = gr1.saturating_sub(gr0);
+            let mut x = 0usize;
+            while x + roi <= w {
+                let ix0 = (x >> ds_shift) as i32;
+                let iy0 = (y >> ds_shift) as i32;
+                let ix1 = (((x + roi) >> ds_shift).max((x >> ds_shift) + 1)) as i32;
+                let iy1 = (((y + roi) >> ds_shift).max((y >> ds_shift) + 1)) as i32;
+                let (_, std_dev) = integral.rect_mean_std(ix0, iy0, ix1, iy1);
+
+                let gc0 = x / 4;
+                let gc1 = ((x + roi - 4).div_ceil(4)).min(gw);
+                let s_cols = gc1.saturating_sub(gc0);
+                let grad_samples = s_rows * s_cols;
+                let grad_sum = (grad_sat[gr1 * gw1 + gc1] + grad_sat[gr0 * gw1 + gc0])
+                    .wrapping_sub(grad_sat[gr0 * gw1 + gc1] + grad_sat[gr1 * gw1 + gc0]);
+                let mean_grad = if grad_samples > 0 {
+                    grad_sum as f64 / grad_samples as f64
                 } else {
                     0.0
-                }
-            } else {
-                0.0
-            };
+                };
 
-            let score = 0.65 * mean_grad + 0.35 * std_dev + xor_boost;
-            candidates.push((
-                Rect::new(x as i32, y as i32, roi as i32, roi as i32),
-                score,
-            ));
-            x += stride;
+                let xor_boost = if let Some(ref carrier) = xor_carrier {
+                    let cx = (x + roi / 2) as i32;
+                    let cy = (y + roi / 2) as i32;
+                    if carrier.patch_has_activity(cx, cy, (roi / 2) as i32) {
+                        25.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
+                let score = 0.65 * mean_grad + 0.35 * std_dev + xor_boost;
+                candidates.push((
+                    Rect::new(x as i32, y as i32, roi as i32, roi as i32),
+                    score,
+                ));
+                x += stride;
+            }
+            y += stride;
         }
-        y += stride;
+    } else {
+        let mut y = 0usize;
+        while y + roi <= h {
+            let mut x = 0usize;
+            while x + roi <= w {
+                let ix0 = (x >> ds_shift) as i32;
+                let iy0 = (y >> ds_shift) as i32;
+                let ix1 = (((x + roi) >> ds_shift).max((x >> ds_shift) + 1)) as i32;
+                let iy1 = (((y + roi) >> ds_shift).max((y >> ds_shift) + 1)) as i32;
+                let (_, std_dev) = integral.rect_mean_std(ix0, iy0, ix1, iy1);
+
+                let mut grad_sum = 0u64;
+                let mut grad_samples = 0usize;
+                for sr in (y + 2..y + roi - 2).step_by(4) {
+                    let row = &src_bytes[sr * w..(sr + 1) * w];
+                    let row_dn = &src_bytes[(sr + 1) * w..(sr + 2) * w];
+                    for sc in (x + 2..x + roi - 2).step_by(4) {
+                        let gx = (row[sc + 1] as i32 - row[sc - 1] as i32).unsigned_abs() as u64;
+                        let gy = (row_dn[sc] as i32 - row[sc] as i32).unsigned_abs() as u64;
+                        grad_sum += gx + gy;
+                        grad_samples += 1;
+                    }
+                }
+                let mean_grad = if grad_samples > 0 {
+                    grad_sum as f64 / grad_samples as f64
+                } else {
+                    0.0
+                };
+
+                let xor_boost = if let Some(ref carrier) = xor_carrier {
+                    let cx = (x + roi / 2) as i32;
+                    let cy = (y + roi / 2) as i32;
+                    if carrier.patch_has_activity(cx, cy, (roi / 2) as i32) {
+                        25.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
+                let score = 0.65 * mean_grad + 0.35 * std_dev + xor_boost;
+                candidates.push((
+                    Rect::new(x as i32, y as i32, roi as i32, roi as i32),
+                    score,
+                ));
+                x += stride;
+            }
+            y += stride;
+        }
     }
 
     // Sort candidates by descending Pixelean saliency score and run Non-Maximum Suppression (IoU < 0.20)
@@ -991,8 +1236,6 @@ mod tests {
 
     #[test]
     fn test_worldtube_burst_super_resolve_recovers_subpixel_signal() {
-        // Synthesize a high-resolution 128x128 ground-truth target with sub-Nyquist 1px micro-bars
-        // that are aliased in any single 64x64 frame.
         let hr_h = 128usize;
         let hr_w = 128usize;
         let mut gt = Mat::zeros(hr_h as i32, hr_w as i32, CV_8UC1).unwrap();
@@ -1014,7 +1257,6 @@ mod tests {
             }
         }
 
-        // Capture a 4-frame 64x64 low-res burst with sub-pixel micro-stepping (0,0), (0.5,0), (0,0.5), (0.5,0.5)
         let sub_shifts: [(f64, f64); 4] = [(0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5)];
         let mut burst = Vec::new();
         let gt_bytes = gt.data_bytes().unwrap();
@@ -1030,7 +1272,6 @@ mod tests {
                         let x0 = (2 * c + ox).min(hr_w - 1);
                         let y1 = (y0 + 1).min(hr_h - 1);
                         let x1 = (x0 + 1).min(hr_w - 1);
-                        // Peaked optical sensor aperture (64% primary sub-pixel, 12% each neighbor)
                         let val = 0.64 * (gt_bytes[y0 * hr_w + x0] as f32)
                             + 0.12 * (gt_bytes[y0 * hr_w + x1] as f32)
                             + 0.12 * (gt_bytes[y1 * hr_w + x0] as f32)
@@ -1042,7 +1283,6 @@ mod tests {
             burst.push(lr);
         }
 
-        // Compare single-frame zoom vs 4-frame worldtube super-resolution
         let (single_2x, _) = zoom_se2_mass_conserving(&burst[0], 2).unwrap();
         let (burst_2x, rep) =
             worldtube_burst_super_resolve(&burst, Some(&sub_shifts), 2).unwrap();
@@ -1078,7 +1318,6 @@ mod tests {
         let mut frame = Mat::zeros(512, 512, CV_8UC1).unwrap();
         {
             let bytes = frame.raw_bytes_mut();
-            // Plant two high-frequency micro-text / gauge plaques on a calm background
             for r in 64..128usize {
                 for c in 96..160usize {
                     let v = if ((r ^ c) & 1) == 0 { 245 } else { 15 };

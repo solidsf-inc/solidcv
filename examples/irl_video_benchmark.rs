@@ -11,7 +11,6 @@ use solidcv::{
     mechinterp::{
         prune_vlm_patch_tokens, GlassBoxSignature64D, SaeBinaryAtom, SaeBinaryCircuitMatcher,
     },
-    prelude::*,
     uplift::{foveated_vlm_roi_uplift, zoom_se2_mass_conserving, FoveatedUpliftConfig},
 };
 use std::{

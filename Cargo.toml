@@ -12,6 +12,10 @@ categories = ["computer-vision", "science", "mathematics", "hardware-support"]
 
 [workspace]
 
+[lib]
+name = "solidcv"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
 [features]
 default = ["imgproc", "video", "calib3d", "features2d", "objdetect", "dnn", "mechinterp"]
 clang-runtime = []
@@ -26,3 +30,9 @@ mechinterp = []
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
