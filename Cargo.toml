@@ -17,7 +17,7 @@ name = "solidcv"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [features]
-default = ["imgproc", "video", "calib3d", "features2d", "objdetect", "dnn", "mechinterp"]
+default = ["imgproc", "video", "calib3d", "features2d", "objdetect", "dnn", "mechinterp", "fx", "tracking"]
 clang-runtime = []
 imgproc = []
 video = []
@@ -26,6 +26,8 @@ features2d = []
 objdetect = []
 dnn = []
 mechinterp = []
+fx = []
+tracking = []
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
