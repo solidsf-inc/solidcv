@@ -22,6 +22,7 @@ pub mod objdetect;
 pub mod pixelean;
 pub mod prelude;
 pub mod realitycomb;
+pub mod tracking;
 pub mod uplift;
 pub mod video;
 pub mod voxelean;
