@@ -119,6 +119,14 @@ pub enum WsEngine {
     Worldtube4D = 0x04,
     /// `H3Av4k120` MiniMax H3 parity & superiority 4K60/4K120 Worldtube Geodesic + Spatial Audio + J1.3 Swarm engine.
     H3Av4k120 = 0x05,
+    /// `BabyVisionSolver` exact pixel homology ($\beta_0, \beta_1, \chi$) + $SE(2)$ mass-conserving crop-and-zoom.
+    BabyVisionSolver = 0x06,
+    /// `CharXivPlotDecompiler` scientific plot RGB curve demixer, plateau detector, intersection solver, and integrator.
+    CharXivPlotDecompiler = 0x07,
+    /// `OSWorldGuiGrounder` deterministic desktop/web GUI action grounder + occlusion gate.
+    OSWorldGuiGrounder = 0x08,
+    /// `TrackEverything3D` long-horizon de-duplicated 3D scene tracker (`Uniform`/`SignedLog` Zobrist voxelization + 3D WAFT + `Sim(3)` alignment).
+    TrackEverything3D = 0x09,
 }
 
 impl WsEngine {
@@ -129,6 +137,10 @@ impl WsEngine {
             0x03 => Some(Self::VoxeleanOctree),
             0x04 => Some(Self::Worldtube4D),
             0x05 => Some(Self::H3Av4k120),
+            0x06 => Some(Self::BabyVisionSolver),
+            0x07 => Some(Self::CharXivPlotDecompiler),
+            0x08 => Some(Self::OSWorldGuiGrounder),
+            0x09 => Some(Self::TrackEverything3D),
             _ => None,
         }
     }
@@ -147,6 +159,14 @@ impl WsEngine {
             Self::Worldtube4D => 10,
             // 20 micro-USD / packet ($0.020 per 1,000 H3 4K60/4K120 AV packets; 500k packets per $10 pack)
             Self::H3Av4k120 => 20,
+            // 8 micro-USD / solve ($0.008 per 1,000 BabyVision topology solves; 1.25M solves per $10 pack)
+            Self::BabyVisionSolver => 8,
+            // 12 micro-USD / chart ($0.012 per 1,000 CharXiv plot decompiles; 833.3k charts per $10 pack)
+            Self::CharXivPlotDecompiler => 12,
+            // 6 micro-USD / ground ($0.006 per 1,000 OSWorld GUI groundings; 1.66M groundings per $10 pack)
+            Self::OSWorldGuiGrounder => 6,
+            // 14 micro-USD / window ($0.014 per 1,000 TrackEverything3D windows; 714.2k windows per $10 pack)
+            Self::TrackEverything3D => 14,
         }
     }
 }
