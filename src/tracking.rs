@@ -35,6 +35,7 @@
 //!    depth + $SE(3)$ pose estimation via [`comb_dense_velocity_field`] and [`solve_pnp_ransac`].
 
 use crate::calib3d::{rotvec_to_rotmat, solve_pnp_ransac, svd_3x3, SOLVEPNP_ITERATIVE};
+use crate::cloud_ws::{SolidCvWsClient, WsEngine, WsRpcRequest, WsRpcResponse};
 use crate::core::{Error, Mat, MatTraitConst, Point2f, Point3f, Result, Vector, CV_32FC1};
 use crate::hardware::{tensor_core_b1_argmin_256, GraceCoherentSlab, ResidencyPolicy};
 use crate::mechinterp::{record_activation, record_circuit_node, TheoremId};
@@ -1761,6 +1762,33 @@ impl TrackEverything {
             waft_binary_matches,
         })
     }
+}
+
+/// Dispatch a long-horizon 3D scene tracking request over the Cloud Binary WebSocket
+/// (`WsEngine::TrackEverything3D`, opcode `0x09`, `14 micro-USD` per window).
+pub fn dispatch_over_ws(
+    client: &mut SolidCvWsClient,
+    num_frames: usize,
+    voxel_size: f32,
+    voxel_mode: VoxelMode,
+    query_point_count: usize,
+) -> Result<WsRpcResponse> {
+    let mode_str = match voxel_mode {
+        VoxelMode::Uniform => "uniform",
+        VoxelMode::SignedLog { .. } => "signedlog",
+    };
+    let req = WsRpcRequest {
+        engine: WsEngine::TrackEverything3D,
+        operation: "track_everything_3d_dedup".to_string(),
+        payload_json: serde_json::json!({
+            "num_frames": num_frames,
+            "voxel_size": voxel_size,
+            "voxel_mode": mode_str,
+            "query_points": query_point_count,
+        })
+        .to_string(),
+    };
+    client.call(&req)
 }
 
 #[cfg(test)]

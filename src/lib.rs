@@ -29,6 +29,7 @@ pub mod voxelean;
 pub mod worldtube;
 pub mod cae_analysis;
 pub mod solidcv_fx;
+pub mod supermimic;
 
 pub use crate as opencv;
 pub use crate as solidcv;
